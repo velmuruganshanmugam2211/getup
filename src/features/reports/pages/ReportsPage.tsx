@@ -14,11 +14,13 @@ import {
   calendarService,
   activityLogService,
   authService,
+  billingCycleService,
 } from '@/services';
 import {
   computeAgencyMetrics,
   computeAllClientsMetrics,
 } from '@/lib/selectors';
+import { formatCycleDateRange } from '@/lib/cycleUtils';
 import { formatINR, formatDate, formatPercent } from '@/lib/format';
 import { useToast } from '@/components/feedback/Toast';
 import {
@@ -90,6 +92,7 @@ export const ReportsPage: React.FC = () => {
   const [clientFilter, setClientFilter] = useState<string>('all');
   const [statementClientId, setStatementClientId] = useState<string>('');
   const [activityEntityFilter, setActivityEntityFilter] = useState<string>('all');
+  const [deliverablesViewMode, setDeliverablesViewMode] = useState<'cycle' | 'month'>('cycle');
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   // Chart DOM refs for PDF capture
@@ -100,6 +103,7 @@ export const ReportsPage: React.FC = () => {
 
   // Queries
   const { data: clients = [] } = useQuery({ queryKey: ['clients'], queryFn: () => clientService.getClients() });
+  const { data: allCycles = [] } = useQuery({ queryKey: ['billingCycles'], queryFn: () => billingCycleService.getCycles() });
   const { data: payments = [] } = useQuery({ queryKey: ['payments'], queryFn: () => financeService.getPayments() });
   const { data: expenses = [] } = useQuery({ queryKey: ['expenses'], queryFn: () => financeService.getExpenses() });
   const { data: deliverables = [] } = useQuery({ queryKey: ['deliverables'], queryFn: () => deliverableService.getDeliverables() });
@@ -200,8 +204,8 @@ export const ReportsPage: React.FC = () => {
     });
 
     // Combined client metrics & agency totals from shared selectors
-    const clientMetrics = computeAllClientsMetrics(clis, pmts, exps, dels, new Date(currentYear, currentMonthNum - 1, 28));
-    const agencyMetrics = computeAgencyMetrics(clis, pmts, exps, dels, new Date(currentYear, currentMonthNum - 1, 28));
+    const clientMetrics = computeAllClientsMetrics(clis, pmts, exps, dels, new Date(currentYear, currentMonthNum - 1, 28), allCycles);
+    const agencyMetrics = computeAgencyMetrics(clis, pmts, exps, dels, new Date(currentYear, currentMonthNum - 1, 28), allCycles);
 
     return {
       clients: clis,
@@ -211,7 +215,7 @@ export const ReportsPage: React.FC = () => {
       clientMetrics,
       agencyMetrics,
     };
-  }, [clients, payments, expenses, deliverables, periodDetails, clientFilter, currentYear, currentMonthNum]);
+  }, [clients, payments, expenses, deliverables, allCycles, periodDetails, clientFilter, currentYear, currentMonthNum]);
 
   // Auto-set statement client
   React.useEffect(() => {
@@ -396,20 +400,30 @@ export const ReportsPage: React.FC = () => {
       } else if (activeTab === 'deliverables') {
         const delCols = [
           { header: 'Client', dataKey: 'name' },
+          { header: 'Cycle', dataKey: 'cycle' },
           { header: 'Active Package Types', dataKey: 'types' },
           { header: 'Promised', dataKey: 'promised', align: 'center' as const },
           { header: 'Delivered', dataKey: 'delivered', align: 'center' as const },
           { header: 'Remaining', dataKey: 'remaining', align: 'center' as const },
           { header: 'Fulfillment Status', dataKey: 'status' },
         ];
-        const delRows = filteredData.clientMetrics.map((cm) => [
-          cm.client.name,
-          cm.deliverables.activeTypes.map((t) => `${t.label}: ${t.done}/${t.promised}`).join(', ') || 'No Package',
-          cm.deliverables.totalPromised,
-          cm.deliverables.totalDone,
-          cm.deliverables.totalRemaining,
-          cm.deliverables.isBehind ? 'Behind Schedule' : 'On Track (Fulfilled)',
-        ]);
+        const delRows = filteredData.clientMetrics.map((cm) => {
+          const cyc = cm.deliverables.currentCycle;
+          const cycleLabel = cyc
+            ? `Cycle ${cyc.cycleNumber} (${formatCycleDateRange(cyc.startDate, cyc.endDate)})`
+            : 'Cycle 1';
+          return [
+            cm.client.name,
+            cycleLabel,
+            cm.deliverables.activeTypes
+              .map((t) => `${t.label}: ${t.displayBadge || `${t.done}/${t.promised}`}`)
+              .join(', ') || 'No Package',
+            cm.deliverables.totalPromised,
+            cm.deliverables.totalDone,
+            cm.deliverables.totalRemaining,
+            cm.deliverables.isBehind ? 'Behind Schedule' : 'On Track (Fulfilled)',
+          ];
+        });
         startY = addTable(doc, startY, delCols, delRows);
       } else if (activeTab === 'team') {
         const teamCols = [
@@ -534,15 +548,24 @@ export const ReportsPage: React.FC = () => {
       ]);
       exportToCsv(`GetupAgency_Profitability_${cleanPeriod}.csv`, headers, rows);
     } else if (activeTab === 'deliverables') {
-      const headers = ['Client', 'Active Packages', 'Total Promised', 'Total Done', 'Total Remaining', 'Status'];
-      const rows = filteredData.clientMetrics.map((cm) => [
-        cm.client.name,
-        cm.deliverables.activeTypes.map((t) => `${t.label}:${t.done}/${t.promised}`).join(' | '),
-        cm.deliverables.totalPromised,
-        cm.deliverables.totalDone,
-        cm.deliverables.totalRemaining,
-        cm.deliverables.isBehind ? 'Behind' : 'On Track',
-      ]);
+      const headers = ['Client', 'Cycle', 'Active Packages', 'Total Promised', 'Total Done', 'Total Remaining', 'Status'];
+      const rows = filteredData.clientMetrics.map((cm) => {
+        const cyc = cm.deliverables.currentCycle;
+        const cycleLabel = cyc
+          ? `Cycle ${cyc.cycleNumber} (${formatCycleDateRange(cyc.startDate, cyc.endDate)})`
+          : 'Cycle 1';
+        return [
+          cm.client.name,
+          cycleLabel,
+          cm.deliverables.activeTypes
+            .map((t) => `${t.label}:${t.displayBadge || `${t.done}/${t.promised}`}`)
+            .join(' | ') || 'No Package',
+          cm.deliverables.totalPromised,
+          cm.deliverables.totalDone,
+          cm.deliverables.totalRemaining,
+          cm.deliverables.isBehind ? 'Behind' : 'On Track',
+        ];
+      });
       exportToCsv(`GetupAgency_Deliverables_${cleanPeriod}.csv`, headers, rows);
     } else if (activeTab === 'team') {
       const headers = ['Team Member', 'Role', 'Tasks Completed', 'Tasks Overdue', 'Deliverables Done'];
@@ -1306,14 +1329,46 @@ export const ReportsPage: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-8">
               <Card className="border-border overflow-hidden">
-                <CardHeader className="p-4 border-b border-border">
-                  <CardTitle className="text-sm font-bold">Client Deliverables Fulfillment</CardTitle>
+                <CardHeader className="p-4 border-b border-border flex flex-row items-center justify-between gap-3">
+                  <div>
+                    <CardTitle className="text-sm font-bold">Client Deliverables Fulfillment</CardTitle>
+                    <p className="text-[11px] text-text-muted mt-0.5">
+                      {deliverablesViewMode === 'cycle'
+                        ? 'Track deliverables promised vs delivered per billing cycle'
+                        : 'Monthly fulfillment overview for filtered period'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 bg-surface-subtle p-1 rounded-control border border-border">
+                    <button
+                      type="button"
+                      onClick={() => setDeliverablesViewMode('cycle')}
+                      className={`px-2.5 py-1 text-xs font-semibold rounded transition-all ${
+                        deliverablesViewMode === 'cycle'
+                          ? 'bg-white shadow-xs text-primary-700 font-bold'
+                          : 'text-text-muted hover:text-text'
+                      }`}
+                    >
+                      Cycle-wise View
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeliverablesViewMode('month')}
+                      className={`px-2.5 py-1 text-xs font-semibold rounded transition-all ${
+                        deliverablesViewMode === 'month'
+                          ? 'bg-white shadow-xs text-primary-700 font-bold'
+                          : 'text-text-muted hover:text-text'
+                      }`}
+                    >
+                      Monthly Summary
+                    </button>
+                  </div>
                 </CardHeader>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs text-left">
                     <thead className="bg-surface-subtle text-text-muted uppercase text-[10px] font-bold border-b border-border">
                       <tr>
                         <th className="py-2.5 px-3">Client</th>
+                        {deliverablesViewMode === 'cycle' && <th className="py-2.5 px-3">Billing Cycle</th>}
                         <th className="py-2.5 px-3">Active Deliverables</th>
                         <th className="py-2.5 px-3 text-center">Promised</th>
                         <th className="py-2.5 px-3 text-center">Done</th>
@@ -1322,37 +1377,56 @@ export const ReportsPage: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
-                      {filteredData.clientMetrics.map((cm) => (
-                        <tr key={cm.client.id} className="hover:bg-surface-subtle/50">
-                          <td className="py-2.5 px-3 font-bold text-text">{cm.client.name}</td>
-                          <td className="py-2.5 px-3">
-                            <div className="flex flex-wrap gap-1">
-                              {cm.deliverables.activeTypes.map((t) => (
-                                <span
-                                  key={t.type}
-                                  className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-surface-subtle border border-border"
-                                >
-                                  {t.label}: {t.done}/{t.promised}
-                                </span>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-3 text-center font-bold tabular-nums">
-                            {cm.deliverables.totalPromised}
-                          </td>
-                          <td className="py-2.5 px-3 text-center font-bold tabular-nums text-emerald-700">
-                            {cm.deliverables.totalDone}
-                          </td>
-                          <td className="py-2.5 px-3 text-center font-bold tabular-nums text-rose-600">
-                            {cm.deliverables.totalRemaining}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <Badge variant={cm.deliverables.isBehind ? 'danger' : 'success'} size="sm">
-                              {cm.deliverables.isBehind ? 'Behind Schedule' : 'On Track'}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))}
+                      {filteredData.clientMetrics.map((cm) => {
+                        const cyc = cm.deliverables.currentCycle;
+                        return (
+                          <tr key={cm.client.id} className="hover:bg-surface-subtle/50">
+                            <td className="py-2.5 px-3 font-bold text-text">
+                              {cm.client.business || cm.client.name}
+                            </td>
+                            {deliverablesViewMode === 'cycle' && (
+                              <td className="py-2.5 px-3 whitespace-nowrap">
+                                {cyc ? (
+                                  <div>
+                                    <span className="font-bold text-text">Cycle {cyc.cycleNumber}</span>
+                                    <span className="block text-[11px] text-text-muted">
+                                      {formatCycleDateRange(cyc.startDate, cyc.endDate)}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-text-muted italic">Cycle 1</span>
+                                )}
+                              </td>
+                            )}
+                            <td className="py-2.5 px-3">
+                              <div className="flex flex-wrap gap-1">
+                                {cm.deliverables.activeTypes.map((t) => (
+                                  <span
+                                    key={t.type}
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-surface-subtle border border-border"
+                                  >
+                                    {t.label}: {t.displayBadge || `${t.done}/${t.promised}`}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-bold tabular-nums">
+                              {cm.deliverables.totalPromised}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-bold tabular-nums text-emerald-700">
+                              {cm.deliverables.totalDone}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-bold tabular-nums text-rose-600">
+                              {cm.deliverables.totalRemaining}
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <Badge variant={cm.deliverables.isBehind ? 'danger' : 'success'} size="sm">
+                                {cm.deliverables.isBehind ? 'Behind Schedule' : 'On Track'}
+                              </Badge>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

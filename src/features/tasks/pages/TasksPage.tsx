@@ -5,13 +5,20 @@ import { Badge } from '@/components/ui/Badge';
 import { ConfirmDialog } from '@/components/feedback/ConfirmDialog';
 import { useToast } from '@/components/feedback/Toast';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { clientService, deliverableService, taskService, teamService } from '@/services';
+import { clientService, deliverableService, taskService, teamService, billingCycleService } from '@/services';
 import { useAuth } from '@/features/auth';
-import { Client, Deliverable, DeliverableType, Task, TaskStatus } from '@/types';
+import { Client, Deliverable, DeliverableType, Task, TaskStatus, BillingCycle } from '@/types';
 import { formatDate } from '@/lib/format';
+import {
+  deriveCycleStatus,
+  getCycleDaysRemaining,
+  isCycleRenewalDue,
+  formatCycleDateRange,
+} from '@/lib/cycleUtils';
 import { computeClientDeliverables } from '@/lib/selectors';
 import { TaskCard } from '../components/TaskCard';
 import { AddTaskModal } from '../components/AddTaskModal';
+import { RenewCycleModal } from '@/features/clients/components/RenewCycleModal';
 import { FilterPopover, ActiveFilterChipsRow, ActiveFilterChip } from '@/components/ui/FilterPopover';
 import {
   Plus,
@@ -22,6 +29,8 @@ import {
   Trash2,
   ExternalLink,
   Download,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { createPdfDoc, addHeader, addTable, savePdf, exportToCsv } from '@/utils/pdf';
@@ -31,6 +40,34 @@ export const TasksPage: React.FC = () => {
   const toast = useToast();
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'super_admin';
+
+  // Month navigation: default October 2026
+  const [currentYear, setCurrentYear] = useState<number>(2026);
+  const [currentMonthNum, setCurrentMonthNum] = useState<number>(10);
+
+  const selectedMonth = `${currentYear}-${String(currentMonthNum).padStart(2, '0')}`;
+  const selectedMonthLabel = new Date(currentYear, currentMonthNum - 1, 1).toLocaleDateString('en-US', {
+    month: 'short',
+    year: 'numeric',
+  });
+
+  const handlePrevMonth = () => {
+    if (currentMonthNum === 1) {
+      setCurrentMonthNum(12);
+      setCurrentYear((y) => y - 1);
+    } else {
+      setCurrentMonthNum((m) => m - 1);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (currentMonthNum === 12) {
+      setCurrentMonthNum(1);
+      setCurrentYear((y) => y + 1);
+    } else {
+      setCurrentMonthNum((m) => m + 1);
+    }
+  };
 
   // Default view is 'list' as requested
   const [viewMode, setViewMode] = useState<'list' | 'board'>('list');
@@ -43,6 +80,7 @@ export const TasksPage: React.FC = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [modalDefaultClientId, setModalDefaultClientId] = useState<string | undefined>();
   const [modalDefaultType, setModalDefaultType] = useState<DeliverableType | undefined>();
+  const [renewTarget, setRenewTarget] = useState<{ client: Client; cycle: BillingCycle } | null>(null);
 
   // Delete State
   const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null);
@@ -57,6 +95,11 @@ export const TasksPage: React.FC = () => {
   const { data: deliverables = [] } = useQuery<Deliverable[]>({
     queryKey: ['deliverables', 'list'],
     queryFn: () => deliverableService.getDeliverables(),
+  });
+
+  const { data: allCycles = [] } = useQuery<BillingCycle[]>({
+    queryKey: ['billingCycles'],
+    queryFn: () => billingCycleService.getCycles(),
   });
 
   const { data: tasks = [], isLoading: isTasksLoading } = useQuery<Task[]>({
@@ -118,15 +161,39 @@ export const TasksPage: React.FC = () => {
     },
   });
 
-  // Quick 1-tap deliverable completion with Undo Toast
+  // Quick 1-tap deliverable completion with Undo Toast (writes to ACTIVE cycle only)
   const handleQuickAddDeliverable = async (
     targetClient: Client,
     type: DeliverableType,
     label: string
   ) => {
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-    const monthStr = today.toISOString().substring(0, 7);
+    const clientCycles = allCycles
+      .filter((c) => c.clientId === targetClient.id)
+      .sort((a, b) => a.cycleNumber - b.cycleNumber);
+
+    const activeCycle = clientCycles.find((c) => {
+      const s = deriveCycleStatus(c);
+      return s === 'active';
+    });
+
+    const pendingRenewalCycle = clientCycles.find((c) => deriveCycleStatus(c) === 'renewal_pending');
+
+    if (!activeCycle || pendingRenewalCycle) {
+      const cycleToRenew = pendingRenewalCycle || activeCycle || clientCycles[clientCycles.length - 1];
+      if (cycleToRenew) {
+        setRenewTarget({ client: targetClient, cycle: cycleToRenew });
+        toast.warning(
+          'Renewal Due',
+          `Cycle for ${targetClient.name} is awaiting renewal. Please renew before logging new deliverables.`
+        );
+      } else {
+        toast.error('No Cycle Found', `Please set up a billing cycle for ${targetClient.name}.`);
+      }
+      return;
+    }
+
+    const todayStr = '2026-10-20';
+    const monthStr = '2026-10';
 
     try {
       const created = await deliverableService.createDeliverable({
@@ -136,6 +203,7 @@ export const TasksPage: React.FC = () => {
         date: todayStr,
         month: monthStr,
         status: 'delivered',
+        cycleId: activeCycle.id,
         assigneeId: user?.id,
       });
 
@@ -143,12 +211,13 @@ export const TasksPage: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['deliverables'] });
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['billingCycles'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['reports'] });
 
       toast.success(
         'Deliverable Logged',
-        `1 ${label.replace(/s$/, '')} marked done for ${targetClient.name}.`,
+        `1 ${label.replace(/s$/, '')} marked done for ${targetClient.name} (Cycle ${activeCycle.cycleNumber}).`,
         {
           label: 'Undo',
           onClick: async () => {
@@ -156,6 +225,7 @@ export const TasksPage: React.FC = () => {
               await deliverableService.deleteDeliverable(created.id);
               queryClient.invalidateQueries({ queryKey: ['deliverables'] });
               queryClient.invalidateQueries({ queryKey: ['clients'] });
+              queryClient.invalidateQueries({ queryKey: ['billingCycles'] });
               queryClient.invalidateQueries({ queryKey: ['dashboard'] });
               queryClient.invalidateQueries({ queryKey: ['reports'] });
               toast.info('Action Undone', 'Deliverable entry was removed.');
@@ -426,6 +496,29 @@ export const TasksPage: React.FC = () => {
               </div>
             </FilterPopover>
 
+            {/* Compact Month Navigation */}
+            <div className="flex items-center gap-1 bg-surface-subtle border border-border rounded-control p-0.5">
+              <button
+                type="button"
+                onClick={handlePrevMonth}
+                className="p-1 rounded hover:bg-surface text-text-muted hover:text-text transition-colors"
+                title="Previous Month"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span className="text-xs font-bold text-text px-2 select-none min-w-[70px] text-center">
+                {selectedMonthLabel}
+              </span>
+              <button
+                type="button"
+                onClick={handleNextMonth}
+                className="p-1 rounded hover:bg-surface text-text-muted hover:text-text transition-colors"
+                title="Next Month"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
             {/* View Toggle */}
             <div className="flex items-center gap-0.5 bg-surface-subtle p-0.5 rounded-control border border-border">
               <button
@@ -514,8 +607,34 @@ export const TasksPage: React.FC = () => {
             </div>
           ) : (
             displayedClients.map((client) => {
-              const dlv = computeClientDeliverables(client, deliverables);
+              const clientCycles = allCycles
+                .filter((c) => c.clientId === client.id)
+                .sort((a, b) => a.cycleNumber - b.cycleNumber);
+
+              const activeCycle =
+                clientCycles.find((c) => {
+                  const s = deriveCycleStatus(c);
+                  return s === 'active' || s === 'renewal_pending';
+                }) || clientCycles[clientCycles.length - 1];
+
+              // Global rule: cycle belongs to the month its startDate falls in
+              const cycleForMonth =
+                clientCycles.find((c) => c.startDate.slice(0, 7) === selectedMonth) ||
+                (selectedMonth === '2026-10' ? activeCycle : undefined);
+
+              const dlv = computeClientDeliverables(client, deliverables, selectedMonth, allCycles);
               const clientTasks = filteredTasks.filter((t) => t.clientId === client.id);
+
+              const isPastCycle =
+                cycleForMonth &&
+                activeCycle &&
+                cycleForMonth.id !== activeCycle.id &&
+                cycleForMonth.endDate < '2026-10-20';
+              const cycleDaysLeft = cycleForMonth ? getCycleDaysRemaining(cycleForMonth) : null;
+              const isRenewalPending = cycleForMonth
+                ? deriveCycleStatus(cycleForMonth) === 'renewal_pending'
+                : false;
+              const isRenewalDue = cycleForMonth ? isCycleRenewalDue(cycleForMonth) : false;
 
               return (
                 <div
@@ -525,7 +644,7 @@ export const TasksPage: React.FC = () => {
                   {/* Client Group Header */}
                   <div className="p-4 bg-surface-subtle/50 border-b border-border flex flex-col md:flex-row md:items-center justify-between gap-3">
                     <div className="space-y-1 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         {isSuperAdmin ? (
                           <Link
                             to={`/clients/${client.id}`}
@@ -545,6 +664,34 @@ export const TasksPage: React.FC = () => {
                             </span>
                           </span>
                         )}
+
+                        {/* Cycle Pill & Days Left */}
+                        {cycleForMonth ? (
+                          <div className="flex items-center gap-1.5 ml-1 flex-wrap">
+                            <span className="text-[11px] font-bold text-primary-700 bg-primary-50 px-2 py-0.5 rounded border border-primary-200">
+                              Cycle {cycleForMonth.cycleNumber} · {formatCycleDateRange(cycleForMonth.startDate, cycleForMonth.endDate)} · {
+                                isRenewalPending
+                                  ? 'Renewal Pending'
+                                  : cycleDaysLeft !== null
+                                  ? (cycleDaysLeft === 0 ? 'Ends today' : `${cycleDaysLeft} days left`)
+                                  : 'Completed'
+                              }
+                            </span>
+                            {isSuperAdmin && (isRenewalDue || isRenewalPending) && (
+                              <button
+                                type="button"
+                                onClick={() => setRenewTarget({ client, cycle: cycleForMonth })}
+                                className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors"
+                              >
+                                Renewal due · Renew
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[11px] font-medium text-text-muted italic bg-surface px-2 py-0.5 rounded border border-border">
+                            No cycle for {selectedMonthLabel}
+                          </span>
+                        )}
                       </div>
 
                       {/* Active Types Progress Line */}
@@ -552,7 +699,11 @@ export const TasksPage: React.FC = () => {
                         <div className="flex items-center gap-3 text-xs flex-wrap">
                           <span className="font-semibold text-text">
                             {dlv.activeTypes
-                              .map((t) => `${t.label} ${t.done} / ${t.promised}`)
+                              .map((t) =>
+                                t.extra > 0
+                                  ? `${t.label} ${t.done} / ${t.promised} (+${t.extra} extra)`
+                                  : `${t.label} ${t.done} / ${t.promised}`
+                              )
                               .join(' · ')}
                           </span>
                           <div className="w-24 h-2 bg-slate-200 rounded-full overflow-hidden shrink-0">
@@ -583,8 +734,25 @@ export const TasksPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Quick-Add Row per Active Type: [-] count [+] "Mark 1 Reel done" */}
-                  {dlv.hasPackage && dlv.activeTypes.length > 0 && (
+                  {/* Quick-Add Row or Past Cycle Notice */}
+                  {isPastCycle ? (
+                    <div className="p-2.5 bg-slate-50 border-b border-border text-[11px] text-text-muted italic flex items-center justify-between">
+                      <span>Past cycle archive ({selectedMonthLabel}) · Deliverables are read-only</span>
+                    </div>
+                  ) : isRenewalPending ? (
+                    <div className="p-2.5 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-900 flex items-center justify-between">
+                      <span>Renewal pending for this cycle. Deliverables cannot be logged until renewed.</span>
+                      {isSuperAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => setRenewTarget({ client, cycle: cycleForMonth || activeCycle })}
+                          className="px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px]"
+                        >
+                          Renew Now
+                        </button>
+                      )}
+                    </div>
+                  ) : dlv.hasPackage && dlv.activeTypes.length > 0 ? (
                     <div className="p-3 bg-primary-50/20 border-b border-border flex flex-wrap gap-2.5 items-center">
                       <span className="text-[11px] font-bold uppercase tracking-wider text-text-muted mr-1">
                         1-Tap Complete:
@@ -628,6 +796,11 @@ export const TasksPage: React.FC = () => {
                               +
                             </button>
                           </div>
+                          {typeMetric.extra > 0 && (
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                              +{typeMetric.extra}
+                            </span>
+                          )}
                           <button
                             type="button"
                             onClick={() =>
@@ -644,13 +817,13 @@ export const TasksPage: React.FC = () => {
                         </div>
                       ))}
                     </div>
-                  )}
+                  ) : null}
 
                   {/* Tasks Table / List for this Client */}
                   <div className="overflow-x-auto">
                     {clientTasks.length === 0 ? (
-                      <div className="py-6 px-4 text-center text-xs text-text-muted">
-                        No active tasks for {client.name}. Log deliverables using the buttons above or click "Add Task".
+                      <div className="py-2.5 px-4 text-xs text-text-muted italic">
+                        No tasks logged for this cycle.
                       </div>
                     ) : (
                       <table className="w-full text-left text-xs border-collapse">
@@ -899,6 +1072,20 @@ export const TasksPage: React.FC = () => {
         }}
         onClose={() => setDeleteTaskId(null)}
       />
+
+      {/* Renew Cycle Modal */}
+      {renewTarget && (
+        <RenewCycleModal
+          open={!!renewTarget}
+          onOpenChange={(open) => !open && setRenewTarget(null)}
+          client={renewTarget.client}
+          cycle={renewTarget.cycle}
+          onSuccess={() => {
+            queryClient.invalidateQueries();
+            setRenewTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 };

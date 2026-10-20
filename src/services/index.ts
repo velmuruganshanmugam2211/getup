@@ -1,6 +1,7 @@
 import {
   mockAuthService,
   mockClientService,
+  mockBillingCycleService,
   mockDeliverableService,
   mockFinanceService,
   mockTaskService,
@@ -13,6 +14,7 @@ import {
 import {
   IAuthService,
   IClientService,
+  IBillingCycleService,
   IDeliverableService,
   IFinanceService,
   ITaskService,
@@ -25,6 +27,7 @@ import {
 
 export const authService: IAuthService = mockAuthService;
 export const clientService: IClientService = mockClientService;
+export const billingCycleService: IBillingCycleService = mockBillingCycleService;
 export const deliverableService: IDeliverableService = mockDeliverableService;
 export const financeService: IFinanceService = mockFinanceService;
 export const taskService: ITaskService = mockTaskService;

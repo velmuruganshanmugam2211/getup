@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { User, Role } from '@/types';
 import { teamService } from '@/services';
 import { useToast } from '@/components/feedback/Toast';
-import { ShieldAlert, UserCheck, Eye, EyeOff, KeyRound, Wand2, Check } from 'lucide-react';
+import { ShieldAlert, UserCheck, Eye, EyeOff, KeyRound, Wand2, Check, AlertCircle } from 'lucide-react';
 import { ImageUploadCrop } from '@/components/forms/ImageUploadCrop';
 
 interface AddEditUserModalProps {
@@ -34,7 +34,7 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [title, setTitle] = useState('');
-  const [role, setRole] = useState<Role>('worker');
+  const [role, setRole] = useState<Role | ''>('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -44,8 +44,25 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
   const [usernameError, setUsernameError] = useState('');
   const [isCheckingUsername, setIsCheckingUsername] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
+  // Full reset on open / close or user change
   useEffect(() => {
+    if (!open) {
+      setName('');
+      setEmail('');
+      setPhone('');
+      setTitle('');
+      setRole('');
+      setUsername('');
+      setPassword('');
+      setActive(true);
+      setPhoto('');
+      setUsernameError('');
+      setErrors({});
+      return;
+    }
+
     if (userToEdit) {
       setName(userToEdit.name || '');
       setEmail(userToEdit.email || '');
@@ -57,17 +74,20 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
       setActive(userToEdit.active !== false && !userToEdit.isFormerMember);
       setPhoto(userToEdit.avatar || '');
       setUsernameError('');
+      setErrors({});
     } else {
+      // Clean blank slate: no pre-selected values
       setName('');
       setEmail('');
       setPhone('');
       setTitle('');
-      setRole('worker');
+      setRole('');
       setUsername('');
       setPassword('');
       setActive(true);
       setPhoto('');
       setUsernameError('');
+      setErrors({});
     }
   }, [userToEdit, open]);
 
@@ -115,6 +135,7 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
     }
     setPassword(generated);
     setShowPassword(true);
+    setErrors((prev) => ({ ...prev, password: '' }));
     toast.success('Password Generated', 'Remember to share it securely with the member.');
   };
 
@@ -139,29 +160,25 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const newErrors: Record<string, string> = {};
 
-    if (!name.trim()) {
-      toast.error('Validation Error', 'Full name is required.');
-      return;
-    }
-    if (!email.trim() || !email.includes('@')) {
-      toast.error('Validation Error', 'A valid email address is required.');
-      return;
-    }
-    if (!username.trim()) {
-      toast.error('Validation Error', 'Username is required.');
-      return;
-    }
-    if (usernameError) {
-      toast.error('Validation Error', usernameError);
-      return;
-    }
+    if (!name.trim()) newErrors.name = 'Full name is required.';
+    if (!email.trim() || !email.includes('@')) newErrors.email = 'A valid email address is required.';
+    if (!username.trim()) newErrors.username = 'Username handle is required.';
+    if (!role) newErrors.role = 'Please select an access role (Super Admin or Worker).';
     if (!userToEdit && (!password || password.length < 8)) {
-      toast.error('Validation Error', 'Password must be at least 8 characters for a new member.');
-      return;
+      newErrors.password = 'Password must be at least 8 characters for a new member.';
     }
     if (userToEdit && password && password.length < 8) {
-      toast.error('Validation Error', 'New password must be at least 8 characters.');
+      newErrors.password = 'New password must be at least 8 characters.';
+    }
+    if (usernameError) {
+      newErrors.username = usernameError;
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      toast.error('Validation Error', 'Please correct the highlighted fields before submitting.');
       return;
     }
 
@@ -174,7 +191,7 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
           username: username.trim().toLowerCase(),
           phone: phone.trim() || undefined,
           title: title.trim() || (role === 'super_admin' ? 'Super Admin' : 'Content Creator'),
-          role,
+          role: role as Role,
           active,
           avatar: photo || undefined,
           password: password.trim() || undefined,
@@ -187,7 +204,7 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
           username: username.trim().toLowerCase(),
           phone: phone.trim() || undefined,
           title: title.trim() || (role === 'super_admin' ? 'Super Admin' : 'Content Creator'),
-          role,
+          role: role as Role,
           active: true,
           avatar: photo || undefined,
           password: password.trim(),
@@ -216,7 +233,12 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
           </ModalDescription>
         </ModalHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4 pt-2 flex-1 overflow-y-auto px-1 flex flex-col">
+        <form
+          onSubmit={handleSubmit}
+          autoComplete="off"
+          noValidate
+          className="space-y-4 pt-2 flex-1 overflow-y-auto px-1 flex flex-col"
+        >
           {/* Profile Photo Upload */}
           <div className="p-3 rounded-card bg-surface-subtle border border-border">
             <label className="text-xs font-semibold text-text block mb-2">Profile Photo</label>
@@ -231,11 +253,16 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
 
           {/* Basic Info */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <FormField label="Full Name" required>
+            <FormField label="Full Name" required error={errors.name}>
               <Input
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setErrors((prev) => ({ ...prev, name: '' }));
+                }}
                 placeholder="e.g. Rahul Sharma"
+                name="team_member_fullname"
+                autoComplete="off"
                 required
               />
             </FormField>
@@ -245,15 +272,22 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="e.g. Senior Video Editor"
+                name="team_member_title"
+                autoComplete="off"
               />
             </FormField>
 
-            <FormField label="Email Address" required>
+            <FormField label="Email Address" required error={errors.email}>
               <Input
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setErrors((prev) => ({ ...prev, email: '' }));
+                }}
                 placeholder="rahul@getup.agency"
+                name="team_member_email"
+                autoComplete="off"
                 required
               />
             </FormField>
@@ -263,6 +297,8 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="+91 98765 43210"
+                name="team_member_phone"
+                autoComplete="off"
               />
             </FormField>
           </div>
@@ -290,7 +326,7 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
               <FormField
                 label="Username (Login Handle)"
                 required
-                error={usernameError}
+                error={errors.username || usernameError}
                 hint={isCheckingUsername ? 'Checking availability...' : 'Unique login username'}
               >
                 <div className="relative">
@@ -299,8 +335,15 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
                   </span>
                   <Input
                     value={username}
-                    onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ''))}
+                    readOnly
+                    onFocus={(e) => e.target.removeAttribute('readonly')}
+                    onChange={(e) => {
+                      setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ''));
+                      setErrors((prev) => ({ ...prev, username: '' }));
+                    }}
                     placeholder="rahul"
+                    name="team_user_handle_field"
+                    autoComplete="off"
                     className="pl-7"
                     required
                   />
@@ -310,13 +353,21 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
               <FormField
                 label={userToEdit ? 'Password (leave blank to keep current)' : 'Password (min 8 chars)'}
                 required={!userToEdit}
+                error={errors.password}
               >
                 <div className="relative">
                   <Input
                     type={showPassword ? 'text' : 'password'}
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    readOnly
+                    onFocus={(e) => e.target.removeAttribute('readonly')}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setErrors((prev) => ({ ...prev, password: '' }));
+                    }}
                     placeholder={userToEdit ? '•••••••• (unchanged)' : 'Minimum 8 characters'}
+                    name="team_user_secret_code"
+                    autoComplete="new-password"
                     className="pr-9"
                     required={!userToEdit}
                   />
@@ -339,7 +390,7 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
             </div>
           </div>
 
-          {/* Role Selection: Super Admin or Worker */}
+          {/* Role Selection: Super Admin or Worker (Unselected by default on add) */}
           <div className="space-y-2">
             <label className="text-xs font-semibold text-text block">
               Access Role <span className="text-semantic-danger">*</span>
@@ -347,7 +398,10 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={() => setRole('super_admin')}
+                onClick={() => {
+                  setRole('super_admin');
+                  setErrors((prev) => ({ ...prev, role: '' }));
+                }}
                 className={`p-3 rounded-card text-left border transition-all ${
                   role === 'super_admin'
                     ? 'border-primary-600 bg-primary-50/50 ring-2 ring-primary-600/20'
@@ -366,7 +420,10 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setRole('worker')}
+                onClick={() => {
+                  setRole('worker');
+                  setErrors((prev) => ({ ...prev, role: '' }));
+                }}
                 className={`p-3 rounded-card text-left border transition-all ${
                   role === 'worker'
                     ? 'border-emerald-600 bg-emerald-50/50 ring-2 ring-emerald-600/20'
@@ -383,6 +440,11 @@ export const AddEditUserModal: React.FC<AddEditUserModalProps> = ({
                 </p>
               </button>
             </div>
+            {errors.role && (
+              <p className="text-[11px] text-semantic-danger flex items-center gap-1 mt-1">
+                <AlertCircle className="w-3 h-3" /> {errors.role}
+              </p>
+            )}
           </div>
 
           {/* Status Switch */}

@@ -136,7 +136,7 @@ export const PackageUsageMeter: React.FC<PackageUsageMeterProps> = ({ clientUsag
                         className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-50 border border-slate-200 text-text"
                       >
                         {getTypeIcon(at.type)}
-                        <strong>{at.label}:</strong> {at.done} / {at.promised}
+                        <strong>{at.label}:</strong> {at.displayBadge || `${at.done} / ${at.promised}`}
                         {at.remaining > 0 && (
                           <span className="text-text-muted">({at.remaining} left)</span>
                         )}

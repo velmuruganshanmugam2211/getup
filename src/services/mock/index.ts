@@ -1,6 +1,7 @@
 import {
   IAuthService,
   IClientService,
+  IBillingCycleService,
   IDeliverableService,
   IFinanceService,
   ITaskService,
@@ -24,9 +25,13 @@ import {
   Notification,
   ActivityLog,
   AgencySettings,
+  BillingCycle,
+  BillingCyclePackage,
+  DeliverableType,
 } from '@/types';
 import bcrypt from 'bcryptjs';
 import { computeAgencyMetrics } from '@/lib/selectors';
+import { calculateCycleEndDate, calculateNextCycleStartDate } from '@/lib/cycleUtils';
 
 const delay = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -133,13 +138,60 @@ export const mockClientService: IClientService = {
 
   async createClient(data): Promise<Client> {
     await delay();
+    const newClientId = `client-${Date.now()}`;
     const newClient: Client = {
       ...data,
-      id: `client-${Date.now()}`,
+      id: newClientId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       createdBy: mockStore.currentUser.id,
     };
+
+    // Auto-create Billing Cycle 1 from onboarding date
+    const startDate = data.onboardedOn || '2026-10-20';
+    const endDate = calculateCycleEndDate(startDate);
+
+    const pkgSnapshot: BillingCyclePackage = {};
+    if (data.package?.videosPerMonth) pkgSnapshot.videos = data.package.videosPerMonth;
+    if (data.package?.postersPerMonth) pkgSnapshot.posts = data.package.postersPerMonth;
+    if (data.package?.reelsPerMonth) pkgSnapshot.reels = data.package.reelsPerMonth;
+    if (data.package?.storiesPerMonth) pkgSnapshot.stories = data.package.storiesPerMonth;
+
+    const cycle1: BillingCycle = {
+      id: `cycle-${newClientId}-1`,
+      clientId: newClientId,
+      cycleNumber: 1,
+      startDate,
+      endDate,
+      package: pkgSnapshot,
+      feeAmount: data.monthlyFee || 0,
+      renewalDecision: 'pending',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: mockStore.currentUser.id,
+    };
+    newClient.currentCycleId = cycle1.id;
+    mockStore.billingCycles.unshift(cycle1);
+
+    // Auto-create pending payment for cycle 1 so Pending to Collect stays correct!
+    if ((data.monthlyFee || 0) > 0) {
+      const pendingPayment: Payment = {
+        id: `pay-${cycle1.id}-pending`,
+        clientId: newClientId,
+        cycleId: cycle1.id,
+        month: startDate.slice(0, 7),
+        amount: data.monthlyFee,
+        date: startDate,
+        status: 'pending',
+        mode: 'bank_transfer',
+        notes: `Billing Cycle 1 Retainer`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: mockStore.currentUser.id,
+      };
+      mockStore.payments.unshift(pendingPayment);
+    }
+
     mockStore.clients.unshift(newClient);
     mockStore.saveAll();
     return newClient;
@@ -163,6 +215,7 @@ export const mockClientService: IClientService = {
     await delay();
     // Cascade delete linked entities cleanly
     mockStore.clients = mockStore.clients.filter((c) => c.id !== id);
+    mockStore.billingCycles = mockStore.billingCycles.filter((c) => c.clientId !== id);
     mockStore.deliverables = mockStore.deliverables.filter((d) => d.clientId !== id);
     mockStore.payments = mockStore.payments.filter((p) => p.clientId !== id);
     mockStore.expenses = mockStore.expenses.filter((e) => e.clientId !== id);
@@ -193,8 +246,29 @@ export const mockDeliverableService: IDeliverableService = {
 
   async createDeliverable(data): Promise<Deliverable> {
     await delay();
+    let assignedCycleId = data.cycleId;
+    if (!assignedCycleId && data.clientId) {
+      const clientCycles = mockStore.billingCycles
+        .filter((c) => c.clientId === data.clientId)
+        .sort((a, b) => b.cycleNumber - a.cycleNumber);
+
+      const today = '2026-10-20';
+      if (data.date) {
+        const dateMatch = clientCycles.find(
+          (c) => data.date >= c.startDate && data.date <= c.endDate
+        );
+        assignedCycleId = dateMatch ? dateMatch.id : clientCycles[0]?.id;
+      } else {
+        const activeMatch = clientCycles.find(
+          (c) => today >= c.startDate && today <= c.endDate
+        );
+        assignedCycleId = activeMatch ? activeMatch.id : clientCycles[0]?.id;
+      }
+    }
+
     const newItem: Deliverable = {
       ...data,
+      cycleId: assignedCycleId,
       id: `dlv-${Date.now()}`,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -256,8 +330,23 @@ export const mockFinanceService: IFinanceService = {
 
   async createPayment(data): Promise<Payment> {
     await delay();
+    let assignedCycleId = data.cycleId;
+    if (!assignedCycleId && data.clientId) {
+      const clientCycles = mockStore.billingCycles
+        .filter((c) => c.clientId === data.clientId)
+        .sort((a, b) => b.cycleNumber - a.cycleNumber);
+
+      const match = clientCycles.find(
+        (c) =>
+          (data.date && data.date >= c.startDate && data.date <= c.endDate) ||
+          (data.month && data.month === c.startDate.slice(0, 7))
+      );
+      assignedCycleId = match ? match.id : clientCycles[0]?.id;
+    }
+
     const newPayment: Payment = {
       ...data,
+      cycleId: assignedCycleId,
       id: `pay-${Date.now()}`,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -309,8 +398,21 @@ export const mockFinanceService: IFinanceService = {
 
   async createExpense(data): Promise<Expense> {
     await delay();
+    let assignedCycleId = data.cycleId;
+    if (!assignedCycleId && data.clientId) {
+      const clientCycles = mockStore.billingCycles
+        .filter((c) => c.clientId === data.clientId)
+        .sort((a, b) => b.cycleNumber - a.cycleNumber);
+
+      const match = clientCycles.find(
+        (c) => data.date && data.date >= c.startDate && data.date <= c.endDate
+      );
+      assignedCycleId = match ? match.id : clientCycles[0]?.id;
+    }
+
     const newExpense: Expense = {
       ...data,
+      cycleId: assignedCycleId,
       id: `exp-${Date.now()}`,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1057,3 +1159,194 @@ export const mockSettingsService: ISettingsService = {
     mockStore.resetAllData();
   },
 };
+
+export const mockBillingCycleService: IBillingCycleService = {
+  async getCycles(filters): Promise<BillingCycle[]> {
+    await delay();
+    let result = [...mockStore.billingCycles];
+    if (filters?.clientId) {
+      result = result.filter((c) => c.clientId === filters.clientId);
+    }
+    if (filters?.month) {
+      result = result.filter((c) => c.startDate.startsWith(filters.month!));
+    }
+    return result.sort((a, b) => a.cycleNumber - b.cycleNumber);
+  },
+
+  async getCycleById(id: string): Promise<BillingCycle | null> {
+    await delay();
+    const cycle = mockStore.billingCycles.find((c) => c.id === id);
+    return cycle || null;
+  },
+
+  async getActiveCycle(clientId: string): Promise<BillingCycle | null> {
+    await delay();
+    const today = '2026-10-20';
+    const clientCycles = mockStore.billingCycles
+      .filter((c) => c.clientId === clientId)
+      .sort((a, b) => b.cycleNumber - a.cycleNumber);
+
+    if (clientCycles.length === 0) return null;
+
+    // Active cycle where startDate <= today <= endDate
+    const active = clientCycles.find((c) => today >= c.startDate && today <= c.endDate);
+    if (active) return active;
+
+    // Otherwise return latest cycle
+    return clientCycles[0];
+  },
+
+  async createCycle(data): Promise<BillingCycle> {
+    await delay();
+    const newCycle: BillingCycle = {
+      ...data,
+      id: `cycle-${data.clientId}-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: mockStore.currentUser.id,
+    };
+    mockStore.billingCycles.push(newCycle);
+
+    const client = mockStore.clients.find((c) => c.id === data.clientId);
+    if (client) {
+      client.currentCycleId = newCycle.id;
+    }
+
+    mockStore.saveAll();
+    return newCycle;
+  },
+
+  async updateCycle(id: string, data): Promise<BillingCycle> {
+    await delay();
+    const index = mockStore.billingCycles.findIndex((c) => c.id === id);
+    if (index === -1) throw new Error('Billing cycle not found');
+    const updated = {
+      ...mockStore.billingCycles[index],
+      ...data,
+      updatedAt: new Date().toISOString(),
+    };
+    mockStore.billingCycles[index] = updated;
+    mockStore.saveAll();
+    return updated;
+  },
+
+  async renewCycle(cycleId: string, options): Promise<BillingCycle> {
+    await delay();
+    const currentCycle = mockStore.billingCycles.find((c) => c.id === cycleId);
+    if (!currentCycle) throw new Error('Current billing cycle not found');
+
+    const client = mockStore.clients.find((c) => c.id === currentCycle.clientId);
+    if (!client) throw new Error('Client not found');
+
+    // Mark current cycle as renewed
+    currentCycle.renewalDecision = 'renewed';
+    currentCycle.updatedAt = new Date().toISOString();
+
+    const nextStartDate = calculateNextCycleStartDate(currentCycle.endDate);
+    const nextEndDate = calculateCycleEndDate(nextStartDate);
+    const nextCycleNumber = currentCycle.cycleNumber + 1;
+
+    let nextPackage: BillingCyclePackage = { ...currentCycle.package };
+    let nextFee = currentCycle.feeAmount;
+
+    if (!options.samePlan) {
+      if (options.newPackage) {
+        nextPackage = { ...options.newPackage };
+      }
+      if (options.newFee !== undefined) {
+        nextFee = options.newFee;
+      }
+    }
+
+    // Delivered deliverables for current cycle
+    const cycleDeliverables = mockStore.deliverables.filter(
+      (d) => d.clientId === client.id && d.cycleId === currentCycle.id && d.status === 'delivered'
+    );
+
+    const carriedForward: BillingCyclePackage = {};
+    const creditedExtra: BillingCyclePackage = {};
+
+    const typeEntries: [keyof BillingCyclePackage, DeliverableType][] = [
+      ['videos', 'video'],
+      ['posts', 'post'],
+      ['reels', 'reel'],
+      ['stories', 'story'],
+    ];
+
+    typeEntries.forEach(([pkgKey, dlvType]) => {
+      const promised =
+        (currentCycle.package[pkgKey] || 0) + (currentCycle.carriedForward?.[pkgKey] || 0);
+      const done =
+        cycleDeliverables.filter((d) => d.type === dlvType).length +
+        (currentCycle.creditedExtra?.[pkgKey] || 0);
+
+      if (options.carryForwardRemaining) {
+        const remaining = Math.max(0, promised - done);
+        if (remaining > 0) carriedForward[pkgKey] = remaining;
+      }
+
+      if (options.creditExtraDelivered) {
+        const extra = Math.max(0, done - promised);
+        if (extra > 0) creditedExtra[pkgKey] = extra;
+      }
+    });
+
+    const newCycle: BillingCycle = {
+      id: `cycle-${client.id}-${nextCycleNumber}-${Date.now()}`,
+      clientId: client.id,
+      cycleNumber: nextCycleNumber,
+      startDate: nextStartDate,
+      endDate: nextEndDate,
+      package: nextPackage,
+      feeAmount: nextFee,
+      renewedFromCycleId: currentCycle.id,
+      carriedForward: Object.keys(carriedForward).length > 0 ? carriedForward : undefined,
+      creditedExtra: Object.keys(creditedExtra).length > 0 ? creditedExtra : undefined,
+      renewalDecision: 'pending',
+      notes: options.notes,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: mockStore.currentUser.id,
+    };
+
+    mockStore.billingCycles.push(newCycle);
+
+    // Update client currentCycleId and package/monthlyFee if plan changed
+    client.currentCycleId = newCycle.id;
+    if (!options.samePlan) {
+      client.monthlyFee = nextFee;
+      client.package = {
+        id: client.package?.id || `pkg-${client.id}`,
+        clientId: client.id,
+        videosPerMonth: nextPackage.videos,
+        postersPerMonth: nextPackage.posts,
+        reelsPerMonth: nextPackage.reels,
+        storiesPerMonth: nextPackage.stories,
+        startDate: nextStartDate,
+      };
+    }
+
+    // Auto-create pending payment for the new cycle so Pending to Collect stays correct!
+    if (nextFee > 0) {
+      const newPendingPayment: Payment = {
+        id: `pay-${newCycle.id}-pending`,
+        clientId: client.id,
+        cycleId: newCycle.id,
+        month: nextStartDate.slice(0, 7),
+        amount: nextFee,
+        date: nextStartDate,
+        status: 'pending',
+        mode: 'bank_transfer',
+        notes: `Billing Cycle ${nextCycleNumber} Retainer`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: mockStore.currentUser.id,
+      };
+      mockStore.payments.unshift(newPendingPayment);
+    }
+
+    mockStore.saveAll();
+    return newCycle;
+  },
+};
+

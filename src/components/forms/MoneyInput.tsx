@@ -3,7 +3,7 @@ import { cn } from '@/lib/cn';
 
 export interface MoneyInputProps
   extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'> {
-  value: number;
+  value?: number | null;
   onChange: (value: number) => void;
   isInvalid?: boolean;
 }
@@ -16,6 +16,8 @@ export const MoneyInput = React.forwardRef<HTMLInputElement, MoneyInputProps>(
       onChange(parsed);
     };
 
+    const displayValue = !value || value === 0 ? '' : value.toLocaleString('en-IN');
+
     return (
       <div className="relative flex items-center w-full">
         <span className="absolute left-3 font-semibold text-text-muted pointer-events-none select-none text-sm">
@@ -25,7 +27,7 @@ export const MoneyInput = React.forwardRef<HTMLInputElement, MoneyInputProps>(
           ref={ref}
           type="text"
           inputMode="numeric"
-          value={value === 0 ? '' : value.toLocaleString('en-IN')}
+          value={displayValue}
           onChange={handleChange}
           disabled={disabled}
           aria-invalid={isInvalid}

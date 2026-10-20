@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Modal,
   ModalContent,
@@ -9,10 +9,11 @@ import {
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { clientService, deliverableService, taskService, teamService } from '@/services';
+import { clientService, deliverableService, taskService, teamService, billingCycleService } from '@/services';
 import { useToast } from '@/components/feedback/Toast';
-import { Client, DeliverableType, Task, TaskPriority } from '@/types';
-import { CheckSquare } from 'lucide-react';
+import { Client, DeliverableType, Task, TaskPriority, BillingCycle } from '@/types';
+import { deriveCycleStatus } from '@/lib/cycleUtils';
+import { CheckSquare, Lock } from 'lucide-react';
 
 export interface AddTaskModalProps {
   isOpen: boolean;
@@ -37,15 +38,34 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
     defaultDeliverableType || ''
   );
   const [assigneeId, setAssigneeId] = useState('');
-  const [priority, setPriority] = useState<TaskPriority>('medium');
-  const [dueDate, setDueDate] = useState(new Date().toISOString().slice(0, 10));
-  const [createDeliverableRecord, setCreateDeliverableRecord] = useState(true);
+  const [priority, setPriority] = useState<TaskPriority | ''>('');
+  const [dueDate, setDueDate] = useState('');
+  const [createDeliverableRecord, setCreateDeliverableRecord] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
-  // Sync defaultClientId when opened
-  React.useEffect(() => {
-    if (defaultClientId) setClientId(defaultClientId);
-    if (defaultDeliverableType) setDeliverableType(defaultDeliverableType);
-  }, [defaultClientId, defaultDeliverableType, isOpen]);
+  // Reset form every time modal opens or closes
+  useEffect(() => {
+    if (isOpen) {
+      setTitle('');
+      setDescription('');
+      setClientId(defaultClientId || '');
+      setDeliverableType(defaultDeliverableType || '');
+      setAssigneeId('');
+      setPriority('');
+      setDueDate('');
+      setCreateDeliverableRecord(false);
+      setFormErrors({});
+    } else {
+      setTitle('');
+      setDescription('');
+      setClientId('');
+      setDeliverableType('');
+      setAssigneeId('');
+      setPriority('');
+      setDueDate('');
+      setFormErrors({});
+    }
+  }, [isOpen, defaultClientId, defaultDeliverableType]);
 
   const { data: clients = [] } = useQuery<Client[]>({
     queryKey: ['clients', 'list'],
@@ -57,18 +77,48 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
     queryFn: () => teamService.getUsers(),
   });
 
-  // Default assignee to first user if not selected
-  React.useEffect(() => {
-    if (!assigneeId && users.length > 0) {
-      setAssigneeId(users[0].id);
-    }
-  }, [users, assigneeId]);
+  const { data: allCycles = [] } = useQuery<BillingCycle[]>({
+    queryKey: ['billingCycles'],
+    queryFn: () => billingCycleService.getCycles(),
+  });
+
+  // Active package types for the selected client's active cycle
+  const availableDeliverableTypes = useMemo(() => {
+    if (!clientId) return [];
+    const clientCycles = allCycles
+      .filter((c) => c.clientId === clientId)
+      .sort((a, b) => a.cycleNumber - b.cycleNumber);
+    
+    const activeCycle =
+      clientCycles.find((c) => {
+        const s = deriveCycleStatus(c);
+        return s === 'active' || s === 'renewal_pending';
+      }) || clientCycles[clientCycles.length - 1];
+
+    if (!activeCycle?.package) return [];
+
+    const types: { value: DeliverableType; label: string }[] = [];
+    if ((activeCycle.package.videos ?? 0) > 0) types.push({ value: 'video', label: 'Video' });
+    if ((activeCycle.package.reels ?? 0) > 0) types.push({ value: 'reel', label: 'Reel' });
+    if ((activeCycle.package.posts ?? 0) > 0) types.push({ value: 'post', label: 'Post' });
+    if ((activeCycle.package.stories ?? 0) > 0) types.push({ value: 'story', label: 'Story' });
+
+    return types;
+  }, [clientId, allCycles]);
 
   const createTaskMutation = useMutation({
     mutationFn: async () => {
-      if (!title.trim()) throw new Error('Task title is required');
-      if (!clientId) throw new Error('Client selection is required');
-      if (!assigneeId) throw new Error('Assignee is required');
+      const errors: Record<string, string> = {};
+      if (!clientId) errors.clientId = 'Please select a client';
+      if (!title.trim()) errors.title = 'Task title is required';
+      if (!priority) errors.priority = 'Please choose task priority';
+      if (!assigneeId) errors.assigneeId = 'Please select team member';
+      if (!dueDate) errors.dueDate = 'Due date is required';
+
+      if (Object.keys(errors).length > 0) {
+        setFormErrors(errors);
+        throw new Error('Please fill in all required fields');
+      }
 
       let createdDeliverableId: string | undefined;
 
@@ -94,7 +144,7 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
         deliverableId: createdDeliverableId,
         deliverableType: (deliverableType || undefined) as DeliverableType | undefined,
         assigneeId,
-        priority,
+        priority: priority as TaskPriority,
         status: 'todo',
         dueDate,
         timeSpent: 0,
@@ -108,22 +158,12 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       toast.success('Task Created', `"${task.title}" has been assigned and tracked.`);
-      handleReset();
       onClose();
     },
     onError: (err: Error) => {
       toast.error('Failed to create task', err.message);
     },
   });
-
-  const handleReset = () => {
-    setTitle('');
-    setDescription('');
-    if (!defaultClientId) setClientId('');
-    setDeliverableType('');
-    setPriority('medium');
-    setDueDate(new Date().toISOString().slice(0, 10));
-  };
 
   const activeClients = clients.filter((c) => c.status === 'active');
 
@@ -140,6 +180,7 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
           </ModalDescription>
         </ModalHeader>
         <form
+          autoComplete="off"
           onSubmit={(e) => {
             e.preventDefault();
             createTaskMutation.mutate();
@@ -148,14 +189,26 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
         >
         {/* Client Selection */}
         <div>
-          <label className="block text-xs font-semibold text-text mb-1">
-            Client / Business <span className="text-rose-500">*</span>
-          </label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-xs font-semibold text-text">
+              Client / Business <span className="text-rose-500">*</span>
+            </label>
+            {defaultClientId && (
+              <span className="text-[10px] text-primary-700 bg-primary-50 px-1.5 py-0.5 rounded border border-primary-200 flex items-center gap-1 font-medium">
+                <Lock className="w-2.5 h-2.5" /> Locked from context
+              </span>
+            )}
+          </div>
           <select
             value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-            required
-            className="w-full text-xs rounded-button border border-border bg-surface px-3 py-2 text-text focus:outline-none focus:ring-1 focus:ring-primary-600"
+            onChange={(e) => {
+              setClientId(e.target.value);
+              if (formErrors.clientId) setFormErrors((prev) => ({ ...prev, clientId: '' }));
+            }}
+            disabled={!!defaultClientId}
+            className={`w-full text-xs rounded-button border bg-surface px-3 py-2 text-text focus:outline-none focus:ring-1 focus:ring-primary-600 ${
+              formErrors.clientId ? 'border-rose-500' : 'border-border'
+            }`}
           >
             <option value="">Select client...</option>
             {activeClients.map((c) => (
@@ -164,6 +217,9 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
               </option>
             ))}
           </select>
+          {formErrors.clientId && (
+            <p className="text-[10px] text-rose-500 font-medium mt-1">{formErrors.clientId}</p>
+          )}
         </div>
 
         {/* Task Title */}
@@ -173,10 +229,16 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
           </label>
           <Input
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              if (formErrors.title) setFormErrors((prev) => ({ ...prev, title: '' }));
+            }}
             placeholder="e.g. Edit Reel #4 - Festive Offer Campaign"
-            required
+            className={formErrors.title ? 'border-rose-500' : ''}
           />
+          {formErrors.title && (
+            <p className="text-[10px] text-rose-500 font-medium mt-1">{formErrors.title}</p>
+          )}
         </div>
 
         {/* Deliverable Type & Link */}
@@ -191,42 +253,42 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
               className="w-full text-xs rounded-button border border-border bg-surface px-3 py-2 text-text focus:outline-none focus:ring-1 focus:ring-primary-600"
             >
               <option value="">None / General Task</option>
-              {(() => {
-                const sel = clients.find((c) => c.id === clientId);
-                const types: { value: DeliverableType; label: string }[] = [];
-                if (sel?.package) {
-                  if ((sel.package.videosPerMonth ?? 0) > 0) types.push({ value: 'video', label: 'Video' });
-                  if ((sel.package.reelsPerMonth ?? 0) > 0) types.push({ value: 'reel', label: 'Reel' });
-                  if ((sel.package.postersPerMonth ?? 0) > 0) types.push({ value: 'post', label: 'Post' });
-                  if ((sel.package.storiesPerMonth ?? 0) > 0) types.push({ value: 'story', label: 'Story' });
-                }
-                const finalTypes = types.length > 0 ? types : [
-                  { value: 'video', label: 'Video' },
-                  { value: 'reel', label: 'Reel' },
-                  { value: 'post', label: 'Post' },
-                  { value: 'story', label: 'Story' },
-                ];
-                return finalTypes.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
-                  </option>
-                ));
-              })()}
+              {availableDeliverableTypes.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
             </select>
+            {clientId && availableDeliverableTypes.length === 0 && (
+              <p className="text-[10px] text-text-muted mt-1 italic">
+                Client has no active package types in current cycle
+              </p>
+            )}
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-text mb-1">Priority</label>
+            <label className="block text-xs font-semibold text-text mb-1">
+              Priority <span className="text-rose-500">*</span>
+            </label>
             <select
               value={priority}
-              onChange={(e) => setPriority(e.target.value as TaskPriority)}
-              className="w-full text-xs rounded-button border border-border bg-surface px-3 py-2 text-text focus:outline-none focus:ring-1 focus:ring-primary-600"
+              onChange={(e) => {
+                setPriority(e.target.value as TaskPriority);
+                if (formErrors.priority) setFormErrors((prev) => ({ ...prev, priority: '' }));
+              }}
+              className={`w-full text-xs rounded-button border bg-surface px-3 py-2 text-text focus:outline-none focus:ring-1 focus:ring-primary-600 ${
+                formErrors.priority ? 'border-rose-500' : 'border-border'
+              }`}
             >
+              <option value="">Select priority...</option>
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
               <option value="urgent">Urgent</option>
             </select>
+            {formErrors.priority && (
+              <p className="text-[10px] text-rose-500 font-medium mt-1">{formErrors.priority}</p>
+            )}
           </div>
         </div>
 
@@ -252,9 +314,13 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
             </label>
             <select
               value={assigneeId}
-              onChange={(e) => setAssigneeId(e.target.value)}
-              required
-              className="w-full text-xs rounded-button border border-border bg-surface px-3 py-2 text-text focus:outline-none focus:ring-1 focus:ring-primary-600"
+              onChange={(e) => {
+                setAssigneeId(e.target.value);
+                if (formErrors.assigneeId) setFormErrors((prev) => ({ ...prev, assigneeId: '' }));
+              }}
+              className={`w-full text-xs rounded-button border bg-surface px-3 py-2 text-text focus:outline-none focus:ring-1 focus:ring-primary-600 ${
+                formErrors.assigneeId ? 'border-rose-500' : 'border-border'
+              }`}
             >
               <option value="">Select team member...</option>
               {users.map((u) => (
@@ -263,6 +329,9 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
                 </option>
               ))}
             </select>
+            {formErrors.assigneeId && (
+              <p className="text-[10px] text-rose-500 font-medium mt-1">{formErrors.assigneeId}</p>
+            )}
           </div>
 
           <div>
@@ -272,9 +341,15 @@ export const AddTaskModal: React.FC<AddTaskModalProps> = ({
             <Input
               type="date"
               value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-              required
+              onChange={(e) => {
+                setDueDate(e.target.value);
+                if (formErrors.dueDate) setFormErrors((prev) => ({ ...prev, dueDate: '' }));
+              }}
+              className={formErrors.dueDate ? 'border-rose-500' : ''}
             />
+            {formErrors.dueDate && (
+              <p className="text-[10px] text-rose-500 font-medium mt-1">{formErrors.dueDate}</p>
+            )}
           </div>
         </div>
 

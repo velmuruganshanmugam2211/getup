@@ -14,7 +14,6 @@ import { MoneyInput } from '@/components/forms/MoneyInput';
 import { Textarea } from '@/components/ui/Textarea';
 import { Select } from '@/components/ui/Select';
 import { useCreateClient, useUpdateClient } from '../hooks/useClients';
-import { clientFormSchema } from '../schemas';
 import { useToast } from '@/components/feedback/Toast';
 import { Client, ClientStatus } from '@/types';
 import { Building2, Package, Sparkles } from 'lucide-react';
@@ -39,47 +38,49 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
   const [contactPerson, setContactPerson] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [status, setStatus] = useState<ClientStatus>('active');
-  const [monthlyFee, setMonthlyFee] = useState(50000);
-  const [onboardedOn, setOnboardedOn] = useState(new Date().toISOString().split('T')[0]);
+  const [status, setStatus] = useState<ClientStatus | ''>('');
+  const [monthlyFee, setMonthlyFee] = useState<number | null>(null);
+  const [onboardedOn, setOnboardedOn] = useState('');
   const [notes, setNotes] = useState('');
 
-  // Package deliverables toggle chips and quantities
+  // Package deliverables toggle chips and quantities - all start unselected & empty
   const [activeTypes, setActiveTypes] = useState<{
     videos: boolean;
     posts: boolean;
     reels: boolean;
     stories: boolean;
   }>({
-    videos: true,
+    videos: false,
     posts: false,
     reels: false,
     stories: false,
   });
   const [typeQuantities, setTypeQuantities] = useState<{
-    videos: number;
-    posts: number;
-    reels: number;
-    stories: number;
+    videos: number | '';
+    posts: number | '';
+    reels: number | '';
+    stories: number | '';
   }>({
-    videos: 12,
-    posts: 10,
-    reels: 8,
-    stories: 15,
+    videos: '',
+    posts: '',
+    reels: '',
+    stories: '',
   });
 
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    if (!isOpen) return;
+
     if (clientToEdit) {
       setName(clientToEdit.name || '');
       setBusiness(clientToEdit.business || '');
       setContactPerson(clientToEdit.contactPerson || '');
       setPhone(clientToEdit.phone || '');
       setEmail(clientToEdit.email || '');
-      setStatus(clientToEdit.status || 'active');
-      setMonthlyFee(clientToEdit.monthlyFee || 0);
-      setOnboardedOn(clientToEdit.onboardedOn || new Date().toISOString().split('T')[0]);
+      setStatus(clientToEdit.status || '');
+      setMonthlyFee(clientToEdit.monthlyFee ?? null);
+      setOnboardedOn(clientToEdit.onboardedOn || '');
       setNotes(clientToEdit.notes || '');
       if (clientToEdit.package) {
         const pkg = clientToEdit.package;
@@ -94,27 +95,28 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
           stories: hasS,
         });
         setTypeQuantities({
-          videos: pkg.videosPerMonth ?? 12,
-          posts: pkg.postersPerMonth ?? 10,
-          reels: pkg.reelsPerMonth ?? 8,
-          stories: pkg.storiesPerMonth ?? 15,
+          videos: pkg.videosPerMonth ?? '',
+          posts: pkg.postersPerMonth ?? '',
+          reels: pkg.reelsPerMonth ?? '',
+          stories: pkg.storiesPerMonth ?? '',
         });
       } else {
         setActiveTypes({ videos: false, posts: false, reels: false, stories: false });
+        setTypeQuantities({ videos: '', posts: '', reels: '', stories: '' });
       }
     } else {
+      // Create mode starts COMPLETELY EMPTY
       setName('');
       setBusiness('');
       setContactPerson('');
       setPhone('');
       setEmail('');
-      setStatus('active');
-      setMonthlyFee(50000);
-      setOnboardedOn(new Date().toISOString().split('T')[0]);
+      setStatus('');
+      setMonthlyFee(null);
+      setOnboardedOn('');
       setNotes('');
-      // Default: videos active with 12
-      setActiveTypes({ videos: true, posts: false, reels: false, stories: false });
-      setTypeQuantities({ videos: 12, posts: 10, reels: 8, stories: 15 });
+      setActiveTypes({ videos: false, posts: false, reels: false, stories: false });
+      setTypeQuantities({ videos: '', posts: '', reels: '', stories: '' });
     }
     setFormErrors({});
   }, [clientToEdit, isOpen]);
@@ -122,19 +124,50 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    const errMap: Record<string, string> = {};
+    if (!name.trim()) errMap['name'] = 'Client / Company name is required';
+    if (!business.trim()) errMap['business'] = 'Industry / Vertical is required';
+    if (!contactPerson.trim()) errMap['contactPerson'] = 'Contact person name is required';
+    if (!phone.trim()) errMap['phone'] = 'Phone number is required';
+    if (!email.trim() || !email.includes('@')) errMap['email'] = 'Valid email address is required';
+    if (!status) errMap['status'] = 'Please select account status';
+    if (monthlyFee === null || monthlyFee === undefined || monthlyFee <= 0) {
+      errMap['monthlyFee'] = 'Monthly retainer fee is required (must be > 0)';
+    }
+    if (!onboardedOn) errMap['onboardedOn'] = 'Onboarding date is required';
+
+    if (activeTypes.videos && (!typeQuantities.videos || Number(typeQuantities.videos) <= 0)) {
+      errMap['videos'] = 'Enter quantity';
+    }
+    if (activeTypes.posts && (!typeQuantities.posts || Number(typeQuantities.posts) <= 0)) {
+      errMap['posts'] = 'Enter quantity';
+    }
+    if (activeTypes.reels && (!typeQuantities.reels || Number(typeQuantities.reels) <= 0)) {
+      errMap['reels'] = 'Enter quantity';
+    }
+    if (activeTypes.stories && (!typeQuantities.stories || Number(typeQuantities.stories) <= 0)) {
+      errMap['stories'] = 'Enter quantity';
+    }
+
+    if (Object.keys(errMap).length > 0) {
+      setFormErrors(errMap);
+      error('Validation Error', 'Please complete all required fields.');
+      return;
+    }
+
     const packageData: Record<string, any> = {
       startDate: onboardedOn,
     };
-    if (activeTypes.videos && typeQuantities.videos > 0) {
+    if (activeTypes.videos && Number(typeQuantities.videos) > 0) {
       packageData.videosPerMonth = Number(typeQuantities.videos);
     }
-    if (activeTypes.posts && typeQuantities.posts > 0) {
+    if (activeTypes.posts && Number(typeQuantities.posts) > 0) {
       packageData.postersPerMonth = Number(typeQuantities.posts);
     }
-    if (activeTypes.reels && typeQuantities.reels > 0) {
+    if (activeTypes.reels && Number(typeQuantities.reels) > 0) {
       packageData.reelsPerMonth = Number(typeQuantities.reels);
     }
-    if (activeTypes.stories && typeQuantities.stories > 0) {
+    if (activeTypes.stories && Number(typeQuantities.stories) > 0) {
       packageData.storiesPerMonth = Number(typeQuantities.stories);
     }
 
@@ -144,24 +177,12 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
       contactPerson: contactPerson.trim(),
       phone: phone.trim(),
       email: email.trim(),
-      status,
-      monthlyFee,
+      status: status as ClientStatus,
+      monthlyFee: Number(monthlyFee),
       onboardedOn,
       notes: notes.trim(),
       package: packageData,
     };
-
-    const validationResult = clientFormSchema.safeParse(formData);
-    if (!validationResult.success) {
-      const errMap: Record<string, string> = {};
-      validationResult.error.errors.forEach((err) => {
-        const fieldName = err.path.join('.');
-        errMap[fieldName] = err.message;
-      });
-      setFormErrors(errMap);
-      error('Validation Error', 'Please check the highlighted form fields.');
-      return;
-    }
 
     try {
       if (clientToEdit) {
@@ -209,7 +230,7 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
   return (
     <Drawer open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DrawerContent size="lg">
-        <form onSubmit={handleSubmit} className="flex flex-col h-full">
+        <form onSubmit={handleSubmit} autoComplete="off" className="flex flex-col h-full">
           <DrawerHeader className="border-b border-border pb-4">
             <DrawerTitle className="flex items-center gap-2 text-base font-bold">
               <Building2 className="w-5 h-5 text-primary-600" />
@@ -342,7 +363,11 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
                 >
                   <Select
                     value={status}
-                    onChange={(e) => setStatus(e.target.value as ClientStatus)}
+                    placeholder="Select account status..."
+                    onChange={(e) => {
+                      setStatus(e.target.value as ClientStatus);
+                      if (formErrors['status']) setFormErrors((prev) => ({ ...prev, status: '' }));
+                    }}
                     options={[
                       { value: 'active', label: 'Active' },
                       { value: 'paused', label: 'Paused' },
@@ -426,15 +451,21 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
                       <Input
                         type="number"
                         min="1"
-                        value={typeQuantities.videos}
-                        onChange={(e) =>
+                        placeholder="Count"
+                        value={typeQuantities.videos === '' ? '' : typeQuantities.videos}
+                        onChange={(e) => {
+                          const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
                           setTypeQuantities((prev) => ({
                             ...prev,
-                            videos: parseInt(e.target.value) || 0,
-                          }))
-                        }
+                            videos: isNaN(val as number) ? '' : val,
+                          }));
+                          if (formErrors['videos']) setFormErrors((prev) => ({ ...prev, videos: '' }));
+                        }}
                         className="h-8 text-center font-bold tabular-nums"
                       />
+                      {formErrors['videos'] && (
+                        <p className="text-[10px] text-semantic-danger font-medium mt-1">{formErrors['videos']}</p>
+                      )}
                     </div>
                   )}
 
@@ -444,15 +475,21 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
                       <Input
                         type="number"
                         min="1"
-                        value={typeQuantities.posts}
-                        onChange={(e) =>
+                        placeholder="Count"
+                        value={typeQuantities.posts === '' ? '' : typeQuantities.posts}
+                        onChange={(e) => {
+                          const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
                           setTypeQuantities((prev) => ({
                             ...prev,
-                            posts: parseInt(e.target.value) || 0,
-                          }))
-                        }
+                            posts: isNaN(val as number) ? '' : val,
+                          }));
+                          if (formErrors['posts']) setFormErrors((prev) => ({ ...prev, posts: '' }));
+                        }}
                         className="h-8 text-center font-bold tabular-nums"
                       />
+                      {formErrors['posts'] && (
+                        <p className="text-[10px] text-semantic-danger font-medium mt-1">{formErrors['posts']}</p>
+                      )}
                     </div>
                   )}
 
@@ -462,15 +499,21 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
                       <Input
                         type="number"
                         min="1"
-                        value={typeQuantities.reels}
-                        onChange={(e) =>
+                        placeholder="Count"
+                        value={typeQuantities.reels === '' ? '' : typeQuantities.reels}
+                        onChange={(e) => {
+                          const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
                           setTypeQuantities((prev) => ({
                             ...prev,
-                            reels: parseInt(e.target.value) || 0,
-                          }))
-                        }
+                            reels: isNaN(val as number) ? '' : val,
+                          }));
+                          if (formErrors['reels']) setFormErrors((prev) => ({ ...prev, reels: '' }));
+                        }}
                         className="h-8 text-center font-bold tabular-nums"
                       />
+                      {formErrors['reels'] && (
+                        <p className="text-[10px] text-semantic-danger font-medium mt-1">{formErrors['reels']}</p>
+                      )}
                     </div>
                   )}
 
@@ -480,15 +523,21 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
                       <Input
                         type="number"
                         min="1"
-                        value={typeQuantities.stories}
-                        onChange={(e) =>
+                        placeholder="Count"
+                        value={typeQuantities.stories === '' ? '' : typeQuantities.stories}
+                        onChange={(e) => {
+                          const val = e.target.value === '' ? '' : parseInt(e.target.value, 10);
                           setTypeQuantities((prev) => ({
                             ...prev,
-                            stories: parseInt(e.target.value) || 0,
-                          }))
-                        }
+                            stories: isNaN(val as number) ? '' : val,
+                          }));
+                          if (formErrors['stories']) setFormErrors((prev) => ({ ...prev, stories: '' }));
+                        }}
                         className="h-8 text-center font-bold tabular-nums"
                       />
+                      {formErrors['stories'] && (
+                        <p className="text-[10px] text-semantic-danger font-medium mt-1">{formErrors['stories']}</p>
+                      )}
                     </div>
                   )}
                 </div>

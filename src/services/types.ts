@@ -11,7 +11,28 @@ import {
   Notification,
   ActivityLog,
   AgencySettings,
+  BillingCycle,
+  BillingCyclePackage,
+  Money,
 } from '@/types';
+
+export interface RenewCycleOptions {
+  samePlan: boolean;
+  newPackage?: BillingCyclePackage;
+  newFee?: Money;
+  carryForwardRemaining?: boolean;
+  creditExtraDelivered?: boolean;
+  notes?: string;
+}
+
+export interface IBillingCycleService {
+  getCycles(filters?: { clientId?: string; month?: string }): Promise<BillingCycle[]>;
+  getCycleById(id: string): Promise<BillingCycle | null>;
+  getActiveCycle(clientId: string): Promise<BillingCycle | null>;
+  createCycle(data: Omit<BillingCycle, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>): Promise<BillingCycle>;
+  updateCycle(id: string, data: Partial<BillingCycle>): Promise<BillingCycle>;
+  renewCycle(cycleId: string, options: RenewCycleOptions): Promise<BillingCycle>;
+}
 
 export interface IAuthService {
   login(identifier: string, password?: string): Promise<User>;

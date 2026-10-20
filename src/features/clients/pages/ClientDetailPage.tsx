@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
 import { Card } from '@/components/ui/Card';
@@ -36,8 +37,13 @@ import {
   useClientExpenses,
   useDeleteExpense,
 } from '../hooks/useClients';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { activityLogService, taskService, teamService, calendarService } from '@/services';
+import {
+  activityLogService,
+  taskService,
+  teamService,
+  calendarService,
+  billingCycleService,
+} from '@/services';
 import { useToast } from '@/components/feedback/Toast';
 import { Can } from '@/components/feedback/Can';
 import {
@@ -53,12 +59,21 @@ import {
   ActivityLog,
   User,
   CalendarItem,
+  BillingCycle,
+  BillingCyclePackage,
 } from '@/types';
 import { formatINR, formatDate, formatDateTime } from '@/lib/format';
 import {
   computeClientFinancials,
   computeClientDeliverables,
 } from '@/lib/selectors';
+import {
+  formatCycleDateRange,
+  deriveCycleStatus,
+  isCycleRenewalDue,
+  getCycleDaysRemaining,
+} from '@/lib/cycleUtils';
+import { RenewCycleModal } from '../components/RenewCycleModal';
 import {
   Phone,
   Mail,
@@ -71,6 +86,8 @@ import {
   Trash2,
   ExternalLink,
   AlertCircle,
+  AlertTriangle,
+  RotateCcw,
   Activity,
   CheckSquare,
   Sparkles,
@@ -114,43 +131,57 @@ export const ClientDetailPage: React.FC = () => {
   // Client Drawer edit state
   const [isEditDrawerOpen, setIsEditDrawerOpen] = useState(false);
 
-  // Deliverable modal state
+  // Deliverable modal state (starts empty)
   const [deliverableModalOpen, setDeliverableModalOpen] = useState(false);
   const [editingDeliverable, setEditingDeliverable] = useState<Deliverable | null>(null);
   const [deliverableToDelete, setDeliverableToDelete] = useState<Deliverable | null>(null);
 
-  const [dlvType, setDlvType] = useState<DeliverableType>('video');
+  const [dlvType, setDlvType] = useState<DeliverableType | ''>('');
   const [dlvTitle, setDlvTitle] = useState('');
-  const [dlvDate, setDlvDate] = useState(new Date().toISOString().split('T')[0]);
-  const [dlvMonth, setDlvMonth] = useState(new Date().toISOString().substring(0, 7));
-  const [dlvStatus, setDlvStatus] = useState<DeliverableStatus>('planned');
+  const [dlvDate, setDlvDate] = useState('');
+  const [dlvMonth, setDlvMonth] = useState('');
+  const [dlvStatus, setDlvStatus] = useState<DeliverableStatus | ''>('');
   const [dlvLink, setDlvLink] = useState('');
   const [dlvNotes, setDlvNotes] = useState('');
+  const [dlvErrors, setDlvErrors] = useState<Record<string, string>>({});
 
-  // Payment modal state
+  // Payment modal state (starts empty)
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
   const [paymentToDelete, setPaymentToDelete] = useState<Payment | null>(null);
 
-  const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
-  const [payMonth, setPayMonth] = useState(new Date().toISOString().substring(0, 7));
-  const [payAmount, setPayAmount] = useState<number>(50000);
-  const [payMode, setPayMode] = useState<PaymentMode>('bank_transfer');
-  const [payStatus, setPayStatus] = useState<PaymentStatus>('paid');
+  const [payDate, setPayDate] = useState('');
+  const [payMonth, setPayMonth] = useState('');
+  const [payAmount, setPayAmount] = useState<number | ''>('');
+  const [payMode, setPayMode] = useState<PaymentMode | ''>('');
+  const [payStatus, setPayStatus] = useState<PaymentStatus | ''>('');
   const [payNotes, setPayNotes] = useState('');
+  const [payErrors, setPayErrors] = useState<Record<string, string>>({});
 
   // Expense modal state
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [expenseToDelete, setExpenseToDelete] = useState<Expense | null>(null);
 
-  // Task modal state
+  // Task modal state (starts empty)
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDescription, setTaskDescription] = useState('');
   const [taskAssignee, setTaskAssignee] = useState('');
-  const [taskPriority, setTaskPriority] = useState<TaskPriority>('medium');
-  const [taskDueDate, setTaskDueDate] = useState(new Date().toISOString().split('T')[0]);
+  const [taskPriority, setTaskPriority] = useState<TaskPriority | ''>('');
+  const [taskDueDate, setTaskDueDate] = useState('');
+  const [taskErrors, setTaskErrors] = useState<Record<string, string>>({});
+
+  // Billing cycles query & renewal modal state
+  const { data: cycles = [] } = useQuery<BillingCycle[]>({
+    queryKey: ['billing-cycles', id],
+    queryFn: () => billingCycleService.getCycles({ clientId: id }),
+    enabled: !!id,
+  });
+
+  const [renewModalOpen, setRenewModalOpen] = useState(false);
+  const [cycleToRenew, setCycleToRenew] = useState<BillingCycle | null>(null);
+  const [expandedCycleId, setExpandedCycleId] = useState<string | null>(null);
 
   // Mutations
   const createDeliverableMutation = useCreateDeliverable();
@@ -179,7 +210,7 @@ export const ClientDetailPage: React.FC = () => {
     },
   });
 
-  // Calculate synchronized financial & deliverable metrics from central selectors
+  // Calculate synchronized financial & deliverable metrics from central selectors with cycles
   const financials = useMemo(() => {
     if (!client) {
       return {
@@ -196,8 +227,8 @@ export const ClientDetailPage: React.FC = () => {
         hasPending: false,
       };
     }
-    return computeClientFinancials(client, payments, expenses);
-  }, [client, payments, expenses]);
+    return computeClientFinancials(client, payments, expenses, new Date(), cycles);
+  }, [client, payments, expenses, cycles]);
 
   const deliverablesMetrics = useMemo(() => {
     if (!client) {
@@ -218,6 +249,7 @@ export const ClientDetailPage: React.FC = () => {
         reelsRemaining: 0,
         storiesRemaining: 0,
         totalRemaining: 0,
+        totalExtra: 0,
         percent: 0,
         isBehind: false,
         hasPackage: false,
@@ -225,8 +257,13 @@ export const ClientDetailPage: React.FC = () => {
         activeTypeKeys: [],
       };
     }
-    return computeClientDeliverables(client, deliverables);
-  }, [client, deliverables]);
+    return computeClientDeliverables(client, deliverables, new Date(), cycles);
+  }, [client, deliverables, cycles]);
+
+  const latestCycle = cycles.length > 0 ? cycles[cycles.length - 1] : undefined;
+  const activeCycle = deliverablesMetrics.currentCycle || latestCycle;
+  const isRenewalDueNow = activeCycle ? isCycleRenewalDue(activeCycle) : false;
+  const activeCycleStatus = activeCycle ? deriveCycleStatus(activeCycle) : undefined;
 
   if (clientLoading) {
     return <LoadingState message="Loading client dossier..." fullPage />;
@@ -250,13 +287,14 @@ export const ClientDetailPage: React.FC = () => {
   // Deliverable Handlers
   const handleOpenAddDeliverable = () => {
     setEditingDeliverable(null);
-    setDlvType('video');
+    setDlvType('');
     setDlvTitle('');
-    setDlvDate(new Date().toISOString().split('T')[0]);
-    setDlvMonth(new Date().toISOString().substring(0, 7));
-    setDlvStatus('planned');
+    setDlvDate('');
+    setDlvMonth('');
+    setDlvStatus('');
     setDlvLink('');
     setDlvNotes('');
+    setDlvErrors({});
     setDeliverableModalOpen(true);
   };
 
@@ -269,13 +307,21 @@ export const ClientDetailPage: React.FC = () => {
     setDlvStatus(dlv.status);
     setDlvLink(dlv.link || '');
     setDlvNotes(dlv.notes || '');
+    setDlvErrors({});
     setDeliverableModalOpen(true);
   };
 
   const handleSaveDeliverable = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!dlvTitle.trim()) {
-      error('Title Required', 'Please enter a title for the deliverable.');
+    const errs: Record<string, string> = {};
+    if (!dlvType) errs.type = 'Please select a deliverable type.';
+    if (!dlvTitle.trim()) errs.title = 'Please enter a title.';
+    if (!dlvDate) errs.date = 'Please select a delivery date.';
+    if (!dlvMonth) errs.month = 'Please enter the month covered.';
+    if (!dlvStatus) errs.status = 'Please select a status.';
+
+    if (Object.keys(errs).length > 0) {
+      setDlvErrors(errs);
       return;
     }
 
@@ -284,11 +330,11 @@ export const ClientDetailPage: React.FC = () => {
         await updateDeliverableMutation.mutateAsync({
           id: editingDeliverable.id,
           data: {
-            type: dlvType,
+            type: dlvType as DeliverableType,
             title: dlvTitle.trim(),
             date: dlvDate,
             month: dlvMonth,
-            status: dlvStatus,
+            status: dlvStatus as DeliverableStatus,
             link: dlvLink.trim() || undefined,
             notes: dlvNotes.trim() || undefined,
           },
@@ -297,11 +343,11 @@ export const ClientDetailPage: React.FC = () => {
       } else {
         await createDeliverableMutation.mutateAsync({
           clientId: client.id,
-          type: dlvType,
+          type: dlvType as DeliverableType,
           title: dlvTitle.trim(),
           date: dlvDate,
           month: dlvMonth,
-          status: dlvStatus,
+          status: dlvStatus as DeliverableStatus,
           link: dlvLink.trim() || undefined,
           notes: dlvNotes.trim() || undefined,
         });
@@ -347,12 +393,13 @@ export const ClientDetailPage: React.FC = () => {
   // Payment Handlers
   const handleOpenAddPayment = () => {
     setEditingPayment(null);
-    setPayDate(new Date().toISOString().split('T')[0]);
-    setPayMonth(new Date().toISOString().substring(0, 7));
-    setPayAmount(client.monthlyFee || 50000);
-    setPayMode('bank_transfer');
-    setPayStatus('paid');
+    setPayDate('');
+    setPayMonth('');
+    setPayAmount('');
+    setPayMode('');
+    setPayStatus('');
     setPayNotes('');
+    setPayErrors({});
     setPaymentModalOpen(true);
   };
 
@@ -364,13 +411,21 @@ export const ClientDetailPage: React.FC = () => {
     setPayMode(payment.mode || 'bank_transfer');
     setPayStatus(payment.status);
     setPayNotes(payment.notes || '');
+    setPayErrors({});
     setPaymentModalOpen(true);
   };
 
   const handleSavePayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (payAmount <= 0) {
-      error('Invalid Amount', 'Payment amount must be greater than zero.');
+    const errs: Record<string, string> = {};
+    if (!payDate) errs.date = 'Please select a payment date.';
+    if (!payMonth) errs.month = 'Please enter the month covered.';
+    if (payAmount === '' || payAmount <= 0) errs.amount = 'Please enter a valid amount greater than zero.';
+    if (!payMode) errs.mode = 'Please select a payment mode.';
+    if (!payStatus) errs.status = 'Please select a payment status.';
+
+    if (Object.keys(errs).length > 0) {
+      setPayErrors(errs);
       return;
     }
 
@@ -381,24 +436,24 @@ export const ClientDetailPage: React.FC = () => {
           data: {
             date: payDate,
             month: payMonth,
-            amount: payAmount,
-            mode: payMode,
-            status: payStatus,
+            amount: typeof payAmount === 'number' ? payAmount : 0,
+            mode: payMode as PaymentMode,
+            status: payStatus as PaymentStatus,
             notes: payNotes.trim() || undefined,
           },
         });
-        success('Payment Updated', `Payment of ${formatINR(payAmount)} updated.`);
+        success('Payment Updated', `Payment of ${formatINR(payAmount as number)} updated.`);
       } else {
         await createPaymentMutation.mutateAsync({
           clientId: client.id,
           date: payDate,
           month: payMonth,
-          amount: payAmount,
-          mode: payMode,
-          status: payStatus,
+          amount: typeof payAmount === 'number' ? payAmount : 0,
+          mode: payMode as PaymentMode,
+          status: payStatus as PaymentStatus,
           notes: payNotes.trim() || undefined,
         });
-        success('Payment Recorded', `Payment of ${formatINR(payAmount)} recorded.`);
+        success('Payment Recorded', `Payment of ${formatINR(payAmount as number)} recorded.`);
       }
       setPaymentModalOpen(false);
     } catch {
@@ -435,23 +490,37 @@ export const ClientDetailPage: React.FC = () => {
     }
   };
 
-  // Task Handler
+  // Task Handlers
+  const handleOpenAddTask = () => {
+    setTaskTitle('');
+    setTaskDescription('');
+    setTaskAssignee('');
+    setTaskPriority('');
+    setTaskDueDate('');
+    setTaskErrors({});
+    setTaskModalOpen(true);
+  };
+
   const handleSaveTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!taskTitle.trim()) {
-      error('Title Required', 'Please enter a task title.');
+    const errs: Record<string, string> = {};
+    if (!taskTitle.trim()) errs.title = 'Please enter a task title.';
+    if (!taskAssignee) errs.assignee = 'Please select an assignee.';
+    if (!taskPriority) errs.priority = 'Please select a priority level.';
+    if (!taskDueDate) errs.dueDate = 'Please select a due date.';
+
+    if (Object.keys(errs).length > 0) {
+      setTaskErrors(errs);
       return;
     }
-
-    const assignee = taskAssignee || teamMembers[0]?.id || 'user-1';
 
     try {
       await createTaskMutation.mutateAsync({
         title: taskTitle.trim(),
         description: taskDescription.trim() || undefined,
         clientId: client.id,
-        assigneeId: assignee,
-        priority: taskPriority,
+        assigneeId: taskAssignee,
+        priority: taskPriority as TaskPriority,
         status: 'todo',
         dueDate: taskDueDate,
         timeSpent: 0,
@@ -460,6 +529,9 @@ export const ClientDetailPage: React.FC = () => {
       setTaskModalOpen(false);
       setTaskTitle('');
       setTaskDescription('');
+      setTaskAssignee('');
+      setTaskPriority('');
+      setTaskDueDate('');
     } catch {
       error('Failed', 'Could not create task.');
     }
@@ -611,6 +683,44 @@ export const ClientDetailPage: React.FC = () => {
           </div>
         }
       />
+
+      {/* Renewal Due / Expired Banner */}
+      {activeCycle && isRenewalDueNow && (
+        <div
+          className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
+            activeCycleStatus === 'renewal_pending'
+              ? 'bg-amber-500/10 border-amber-500/30 text-amber-900 dark:text-amber-200'
+              : 'bg-brand-primary/10 border-brand-primary/30 text-brand-primary'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600" />
+            <div>
+              <p className="text-sm font-bold">
+                {activeCycleStatus === 'renewal_pending'
+                  ? `Cycle ${activeCycle.cycleNumber} Ended · Renewal Pending`
+                  : `Cycle ${activeCycle.cycleNumber} Renewal Due (${formatDate(activeCycle.endDate)})`}
+              </p>
+              <p className="text-xs opacity-90 mt-0.5">
+                {activeCycleStatus === 'renewal_pending'
+                  ? `Cycle ended on ${formatDate(activeCycle.endDate)}. Please renew with same plan or customize a new plan.`
+                  : `Cycle ends in ${deliverablesMetrics.cycleDaysRemaining ?? 0} days. Choose to renew with the same plan or update targets.`}
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              setCycleToRenew(activeCycle);
+              setRenewModalOpen(true);
+            }}
+            className="shrink-0"
+          >
+            Renew Now
+          </Button>
+        </div>
+      )}
 
       {/* Profile & Contract Header Cards */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
@@ -786,7 +896,7 @@ export const ClientDetailPage: React.FC = () => {
           </p>
         ) : (
           <div className="divide-y divide-border -mx-1">
-            {clientCalendarItems.slice(0, 5).map((item) => (
+            {clientCalendarItems.slice(0, 5).map((item: CalendarItem) => (
               <div key={item.id} className="py-2 px-1 flex items-center justify-between gap-3 text-xs">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <span
@@ -822,9 +932,12 @@ export const ClientDetailPage: React.FC = () => {
         )}
       </Card>
 
-      {/* Tabs Section: Deliverables, Payments, Expenses, Linked Tasks, Activity */}
-      <Tabs defaultValue="deliverables" className="space-y-4">
+      {/* Tabs Section: Cycles, Deliverables, Payments, Expenses, Linked Tasks, Activity */}
+      <Tabs defaultValue="cycles" className="space-y-4">
         <TabsList className="bg-surface border border-border p-1 rounded-card flex flex-wrap gap-1">
+          <TabsTrigger value="cycles" className="text-xs font-semibold px-4 py-2">
+            Billing Cycles ({cycles.length})
+          </TabsTrigger>
           <TabsTrigger value="deliverables" className="text-xs font-semibold px-4 py-2">
             Deliverables Log ({deliverables.length})
           </TabsTrigger>
@@ -844,6 +957,320 @@ export const ClientDetailPage: React.FC = () => {
             Activity Timeline ({activityLogs.length})
           </TabsTrigger>
         </TabsList>
+
+        {/* TAB 0: BILLING CYCLES */}
+        <TabsContent value="cycles" className="space-y-4">
+          <div className="flex items-center justify-between bg-surface p-4 rounded-card border border-border">
+            <div>
+              <h4 className="text-sm font-bold text-text">Month-wise Billing Cycles</h4>
+              <p className="text-xs text-text-muted">
+                Cycles track promised deliverables, deliveries, fees, and payments for each individual monthly billing period.
+              </p>
+            </div>
+            {activeCycle && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  setCycleToRenew(activeCycle);
+                  setRenewModalOpen(true);
+                }}
+                leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
+              >
+                Renew Cycle
+              </Button>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            {cycles.map((c: BillingCycle) => {
+              const status = deriveCycleStatus(c, '2026-10-20', client.status);
+              const daysLeft = getCycleDaysRemaining(c, '2026-10-20');
+              const cycleDelivs = deliverables.filter(
+                (d) =>
+                  d.status === 'delivered' &&
+                  (d.cycleId === c.id ||
+                    (!d.cycleId && d.date >= c.startDate && d.date <= c.endDate))
+              );
+              const cyclePayments = payments.filter(
+                (p) =>
+                  p.status === 'paid' &&
+                  (p.cycleId === c.id ||
+                    (!p.cycleId && (p.date >= c.startDate && p.date <= c.endDate)))
+              );
+              const cycleExpenses = expenses.filter(
+                (e) =>
+                  e.cycleId === c.id ||
+                  (!e.cycleId && e.date >= c.startDate && e.date <= c.endDate)
+              );
+
+              const received = cyclePayments.reduce((sum, p) => sum + p.amount, 0);
+              const pending = Math.max(0, c.feeAmount - received);
+              const spent = cycleExpenses.reduce((sum, e) => sum + e.amount, 0);
+              const profit = received - spent;
+              const isExpanded = expandedCycleId === c.id;
+
+              return (
+                <Card key={c.id} className="p-4 border-border space-y-3">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-border/50 pb-3">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <span className="text-sm font-bold text-text">
+                        Cycle {c.cycleNumber}
+                      </span>
+                      <span className="text-xs text-text-muted">
+                        {formatCycleDateRange(c.startDate, c.endDate)}
+                      </span>
+                      {status === 'active' && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                          Active · {daysLeft >= 0 ? `${daysLeft} days left` : 'Ending today'}
+                        </span>
+                      )}
+                      {status === 'renewal_pending' && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                          Ended – renewal pending
+                        </span>
+                      )}
+                      {status === 'completed' && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-500/10 text-slate-600 border border-slate-500/20">
+                          Completed
+                        </span>
+                      )}
+                      {status === 'upcoming' && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 border border-blue-500/20">
+                          Upcoming
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 self-end sm:self-auto">
+                      {(status === 'renewal_pending' || isCycleRenewalDue(c)) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setCycleToRenew(c);
+                            setRenewModalOpen(true);
+                          }}
+                          className="h-7 text-xs border-amber-500 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                        >
+                          Renew Now
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setExpandedCycleId(isExpanded ? null : c.id)}
+                        className="h-7 text-xs text-text-muted"
+                      >
+                        {isExpanded ? 'Hide Details' : 'View Details'}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Deliverables Targets and Deliveries */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    {(['videos', 'posts', 'reels', 'stories'] as (keyof BillingCyclePackage)[]).map((pkgKey) => {
+                      const promisedBase = c.package[pkgKey] || 0;
+                      const carried = c.carriedForward?.[pkgKey] || 0;
+                      const promised = promisedBase + carried;
+                      const dlvType =
+                        pkgKey === 'videos'
+                          ? 'video'
+                          : pkgKey === 'posts'
+                          ? 'post'
+                          : pkgKey === 'reels'
+                          ? 'reel'
+                          : 'story';
+                      const delivered =
+                        cycleDelivs.filter((d) => d.type === dlvType).length +
+                        (c.creditedExtra?.[pkgKey] || 0);
+                      const extra = Math.max(0, delivered - promised);
+
+                      if (promised === 0 && delivered === 0) return null;
+
+                      return (
+                        <div
+                          key={String(pkgKey)}
+                          className="p-2.5 rounded-lg bg-surface-subtle border border-border/60"
+                        >
+                          <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider capitalize block">
+                            {String(pkgKey)}
+                          </span>
+                          <span className="text-xs font-bold text-text">
+                            {delivered} / {promised}
+                            {extra > 0 && (
+                              <span className="text-emerald-600 font-semibold text-[11px] ml-1">
+                                (+{extra} extra)
+                              </span>
+                            )}
+                            {carried > 0 && (
+                              <span className="text-brand-primary text-[10px] block font-normal">
+                                (+{carried} carried forward)
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Financial row */}
+                  <div className="grid grid-cols-5 gap-2 text-center pt-2 border-t border-border/50">
+                    <div className="p-1.5 rounded bg-surface-subtle">
+                      <span className="text-[9px] text-text-muted uppercase font-bold block">Fee</span>
+                      <span className="text-xs font-bold text-text">{formatINR(c.feeAmount)}</span>
+                    </div>
+                    <div className="p-1.5 rounded bg-surface-subtle">
+                      <span className="text-[9px] text-text-muted uppercase font-bold block">Received</span>
+                      <span className="text-xs font-bold text-emerald-600">{formatINR(received)}</span>
+                    </div>
+                    <div className="p-1.5 rounded bg-surface-subtle">
+                      <span className="text-[9px] text-text-muted uppercase font-bold block">Pending</span>
+                      <span
+                        className={`text-xs font-bold ${
+                          pending > 0 ? 'text-semantic-danger' : 'text-text-muted'
+                        }`}
+                      >
+                        {formatINR(pending)}
+                      </span>
+                    </div>
+                    <div className="p-1.5 rounded bg-surface-subtle">
+                      <span className="text-[9px] text-text-muted uppercase font-bold block">Expenses</span>
+                      <span className="text-xs font-bold text-amber-600">{formatINR(spent)}</span>
+                    </div>
+                    <div className="p-1.5 rounded bg-surface-subtle">
+                      <span className="text-[9px] text-text-muted uppercase font-bold block">Profit</span>
+                      <span
+                        className={`text-xs font-bold ${
+                          profit >= 0 ? 'text-emerald-700' : 'text-semantic-danger'
+                        }`}
+                      >
+                        {formatINR(profit)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Expandable details */}
+                  {isExpanded && (
+                    <div className="pt-3 border-t border-border space-y-2 text-xs">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="p-3 rounded-lg bg-surface-subtle border border-border">
+                          <span className="text-[11px] font-bold text-text uppercase tracking-wider block mb-1.5">
+                            Cycle Deliverables ({cycleDelivs.length})
+                          </span>
+                          {cycleDelivs.length === 0 ? (
+                            <p className="text-text-muted text-[11px]">
+                              No completed deliverables in this cycle yet.
+                            </p>
+                          ) : (
+                            <ul className="space-y-1">
+                              {cycleDelivs.map((d) => (
+                                <li
+                                  key={d.id}
+                                  className="flex justify-between items-center text-text text-[11px]"
+                                >
+                                  <span className="truncate">{d.title}</span>
+                                  <span className="text-text-muted shrink-0 ml-2">
+                                    {formatDate(d.date)}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+
+                        <div className="p-3 rounded-lg bg-surface-subtle border border-border">
+                          <span className="text-[11px] font-bold text-text uppercase tracking-wider block mb-1.5">
+                            Cycle Payments ({cyclePayments.length})
+                          </span>
+                          {cyclePayments.length === 0 ? (
+                            <p className="text-text-muted text-[11px]">
+                              No payments recorded for this cycle yet.
+                            </p>
+                          ) : (
+                            <ul className="space-y-1">
+                              {cyclePayments.map((p) => (
+                                <li
+                                  key={p.id}
+                                  className="flex justify-between items-center text-text text-[11px]"
+                                >
+                                  <span>
+                                    {formatDate(p.date)} ({p.mode})
+                                  </span>
+                                  <span className="font-semibold text-emerald-600">
+                                    {formatINR(p.amount)}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+
+            {/* Lifetime Totals Row */}
+            <Card className="p-4 bg-surface-subtle border border-border font-medium text-xs">
+              <div className="flex items-center justify-between font-bold text-text mb-2">
+                <span>Lifetime Contract Totals</span>
+                <span>{cycles.length} Total Billing Cycles</span>
+              </div>
+              <div className="grid grid-cols-5 gap-2 text-center pt-1 border-t border-border">
+                <div>
+                  <span className="text-[9px] text-text-muted uppercase font-bold block">
+                    Total Agreed
+                  </span>
+                  <span className="text-xs font-bold text-text">
+                    {formatINR(financials.expected)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[9px] text-text-muted uppercase font-bold block">
+                    Total Received
+                  </span>
+                  <span className="text-xs font-bold text-emerald-600">
+                    {formatINR(financials.received)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[9px] text-text-muted uppercase font-bold block">
+                    Total Pending
+                  </span>
+                  <span
+                    className={`text-xs font-bold ${
+                      financials.pending > 0 ? 'text-semantic-danger' : 'text-text-muted'
+                    }`}
+                  >
+                    {formatINR(financials.pending)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[9px] text-text-muted uppercase font-bold block">
+                    Total Expenses
+                  </span>
+                  <span className="text-xs font-bold text-amber-600">
+                    {formatINR(financials.clientExpenses)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[9px] text-text-muted uppercase font-bold block">
+                    Net Profit
+                  </span>
+                  <span
+                    className={`text-xs font-bold ${
+                      financials.profit >= 0 ? 'text-emerald-700' : 'text-semantic-danger'
+                    }`}
+                  >
+                    {formatINR(financials.profit)}
+                  </span>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </TabsContent>
 
         {/* TAB 1: DELIVERABLES LOG */}
         <TabsContent value="deliverables" className="space-y-4">
@@ -1213,7 +1640,7 @@ export const ClientDetailPage: React.FC = () => {
                         <CheckSquare className="w-8 h-8 mx-auto mb-2 text-text-subtle" />
                         No tasks currently linked to this client.
                         <div className="mt-3">
-                          <Button variant="outline" size="sm" onClick={() => setTaskModalOpen(true)}>
+                          <Button variant="outline" size="sm" onClick={handleOpenAddTask}>
                             Create Linked Task
                           </Button>
                         </div>
@@ -1222,7 +1649,7 @@ export const ClientDetailPage: React.FC = () => {
                   ) : (
                     tasks.map((task) => {
                       const assigneeName =
-                        teamMembers.find((u) => u.id === task.assigneeId)?.name || 'Assignee';
+                        teamMembers.find((u: User) => u.id === task.assigneeId)?.name || 'Assignee';
                       return (
                         <tr key={task.id} className="hover:bg-surface-subtle/50 transition-colors">
                           <td className="py-3 px-4 font-semibold text-text max-w-xs">
@@ -1293,7 +1720,7 @@ export const ClientDetailPage: React.FC = () => {
               </p>
             ) : (
               <div className="relative border-l-2 border-primary-200 ml-3 space-y-6 pl-5 py-2">
-                {activityLogs.map((log) => (
+                {activityLogs.map((log: ActivityLog) => (
                   <div key={log.id} className="relative group">
                     <div className="absolute -left-[27px] top-1 w-3.5 h-3.5 rounded-full bg-surface border-2 border-primary-600 group-hover:scale-125 transition-transform" />
                     <div>
@@ -1330,7 +1757,7 @@ export const ClientDetailPage: React.FC = () => {
       {/* Add / Edit Deliverable Modal */}
       <Modal open={deliverableModalOpen} onOpenChange={setDeliverableModalOpen}>
         <ModalContent size="md">
-          <form onSubmit={handleSaveDeliverable} className="flex flex-col flex-1 h-full">
+          <form onSubmit={handleSaveDeliverable} className="flex flex-col flex-1 h-full" autoComplete="off">
             <ModalHeader>
               <ModalTitle>
                 {editingDeliverable ? 'Edit Deliverable Log' : 'Add New Deliverable'}
@@ -1342,12 +1769,16 @@ export const ClientDetailPage: React.FC = () => {
 
             <div className="space-y-4 py-4 flex-1 overflow-y-auto">
               <div className="grid grid-cols-2 gap-4">
-                <FormField label="Deliverable Type" required>
+                <FormField label="Deliverable Type" required error={dlvErrors.type}>
                   <Select
                     value={dlvType}
-                    onChange={(e) => setDlvType(e.target.value as DeliverableType)}
-                    options={
-                      deliverablesMetrics.activeTypes.length > 0
+                    onChange={(e) => {
+                      setDlvType(e.target.value as DeliverableType);
+                      setDlvErrors((prev) => ({ ...prev, type: '' }));
+                    }}
+                    options={[
+                      { value: '', label: 'Select deliverable type' },
+                      ...(deliverablesMetrics.activeTypes.length > 0
                         ? deliverablesMetrics.activeTypes.map((t) => ({
                             value: t.type,
                             label: t.label,
@@ -1357,16 +1788,20 @@ export const ClientDetailPage: React.FC = () => {
                             { value: 'reel', label: 'Reel' },
                             { value: 'post', label: 'Post' },
                             { value: 'story', label: 'Story' },
-                          ]
-                    }
+                          ]),
+                    ]}
                   />
                 </FormField>
 
-                <FormField label="Status" required>
+                <FormField label="Status" required error={dlvErrors.status}>
                   <Select
                     value={dlvStatus}
-                    onChange={(e) => setDlvStatus(e.target.value as DeliverableStatus)}
+                    onChange={(e) => {
+                      setDlvStatus(e.target.value as DeliverableStatus);
+                      setDlvErrors((prev) => ({ ...prev, status: '' }));
+                    }}
                     options={[
+                      { value: '', label: 'Select status' },
                       { value: 'planned', label: 'Planned' },
                       { value: 'in_progress', label: 'In Progress' },
                       { value: 'delivered', label: 'Delivered' },
@@ -1375,29 +1810,44 @@ export const ClientDetailPage: React.FC = () => {
                 </FormField>
               </div>
 
-              <FormField label="Deliverable Title" required>
+              <FormField label="Deliverable Title" required error={dlvErrors.title}>
                 <Input
                   placeholder="e.g. Diwali Brand Film Main Cut"
                   value={dlvTitle}
-                  onChange={(e) => setDlvTitle(e.target.value)}
+                  onChange={(e) => {
+                    setDlvTitle(e.target.value);
+                    setDlvErrors((prev) => ({ ...prev, title: '' }));
+                  }}
                   autoFocus
+                  autoComplete="off"
                 />
               </FormField>
 
               <div className="grid grid-cols-2 gap-4">
-                <FormField label="Delivery Date" required>
+                <FormField label="Delivery Date" required error={dlvErrors.date}>
                   <Input
                     type="date"
                     value={dlvDate}
-                    onChange={(e) => setDlvDate(e.target.value)}
+                    onChange={(e) => {
+                      setDlvDate(e.target.value);
+                      setDlvErrors((prev) => ({ ...prev, date: '' }));
+                      if (!dlvMonth && e.target.value) {
+                        setDlvMonth(e.target.value.substring(0, 7));
+                      }
+                    }}
+                    autoComplete="off"
                   />
                 </FormField>
 
-                <FormField label="Month Covered (YYYY-MM)" required>
+                <FormField label="Month Covered (YYYY-MM)" required error={dlvErrors.month}>
                   <Input
                     placeholder="YYYY-MM"
                     value={dlvMonth}
-                    onChange={(e) => setDlvMonth(e.target.value)}
+                    onChange={(e) => {
+                      setDlvMonth(e.target.value);
+                      setDlvErrors((prev) => ({ ...prev, month: '' }));
+                    }}
+                    autoComplete="off"
                   />
                 </FormField>
               </div>
@@ -1407,6 +1857,7 @@ export const ClientDetailPage: React.FC = () => {
                   placeholder="https://drive.google.com/..."
                   value={dlvLink}
                   onChange={(e) => setDlvLink(e.target.value)}
+                  autoComplete="off"
                 />
               </FormField>
 
@@ -1481,7 +1932,7 @@ export const ClientDetailPage: React.FC = () => {
       {/* Add / Edit Payment Modal */}
       <Modal open={paymentModalOpen} onOpenChange={setPaymentModalOpen}>
         <ModalContent size="md">
-          <form onSubmit={handleSavePayment} className="flex flex-col flex-1 h-full">
+          <form onSubmit={handleSavePayment} className="flex flex-col flex-1 h-full" autoComplete="off">
             <ModalHeader>
               <ModalTitle>{editingPayment ? 'Edit Payment Record' : 'Record New Payment'}</ModalTitle>
               <ModalDescription className="text-xs text-text-muted">
@@ -1491,33 +1942,56 @@ export const ClientDetailPage: React.FC = () => {
 
             <div className="space-y-4 py-4 flex-1 overflow-y-auto">
               <div className="grid grid-cols-2 gap-4">
-                <FormField label="Payment Date" required>
+                <FormField label="Payment Date" required error={payErrors.date}>
                   <Input
                     type="date"
                     value={payDate}
-                    onChange={(e) => setPayDate(e.target.value)}
+                    onChange={(e) => {
+                      setPayDate(e.target.value);
+                      setPayErrors((prev) => ({ ...prev, date: '' }));
+                      if (!payMonth && e.target.value) {
+                        setPayMonth(e.target.value.substring(0, 7));
+                      }
+                    }}
+                    autoComplete="off"
                   />
                 </FormField>
 
-                <FormField label="Month Covered (YYYY-MM)" required>
+                <FormField label="Month Covered (YYYY-MM)" required error={payErrors.month}>
                   <Input
                     placeholder="YYYY-MM"
                     value={payMonth}
-                    onChange={(e) => setPayMonth(e.target.value)}
+                    onChange={(e) => {
+                      setPayMonth(e.target.value);
+                      setPayErrors((prev) => ({ ...prev, month: '' }));
+                    }}
+                    autoComplete="off"
                   />
                 </FormField>
               </div>
 
               <div className="grid grid-cols-3 gap-4">
-                <FormField label="Amount (₹)" required>
-                  <MoneyInput value={payAmount} onChange={setPayAmount} />
+                <FormField label="Amount (₹)" required error={payErrors.amount}>
+                  <MoneyInput
+                    value={payAmount === '' ? null : payAmount}
+                    onChange={(val) => {
+                      setPayAmount(val);
+                      setPayErrors((prev) => ({ ...prev, amount: '' }));
+                    }}
+                    placeholder="e.g. 50,000"
+                    autoComplete="off"
+                  />
                 </FormField>
 
-                <FormField label="Payment Mode" required>
+                <FormField label="Payment Mode" required error={payErrors.mode}>
                   <Select
                     value={payMode}
-                    onChange={(e) => setPayMode(e.target.value as PaymentMode)}
+                    onChange={(e) => {
+                      setPayMode(e.target.value as PaymentMode);
+                      setPayErrors((prev) => ({ ...prev, mode: '' }));
+                    }}
                     options={[
+                      { value: '', label: 'Select mode' },
                       { value: 'bank_transfer', label: 'Bank Transfer' },
                       { value: 'upi', label: 'UPI' },
                       { value: 'cheque', label: 'Cheque' },
@@ -1526,11 +2000,15 @@ export const ClientDetailPage: React.FC = () => {
                   />
                 </FormField>
 
-                <FormField label="Payment Status" required>
+                <FormField label="Payment Status" required error={payErrors.status}>
                   <Select
                     value={payStatus}
-                    onChange={(e) => setPayStatus(e.target.value as PaymentStatus)}
+                    onChange={(e) => {
+                      setPayStatus(e.target.value as PaymentStatus);
+                      setPayErrors((prev) => ({ ...prev, status: '' }));
+                    }}
                     options={[
+                      { value: '', label: 'Select status' },
                       { value: 'paid', label: 'Paid' },
                       { value: 'pending', label: 'Pending' },
                       { value: 'partial', label: 'Partial' },
@@ -1545,6 +2023,7 @@ export const ClientDetailPage: React.FC = () => {
                   placeholder="e.g. NEFT ref #AXIS98712398"
                   value={payNotes}
                   onChange={(e) => setPayNotes(e.target.value)}
+                  autoComplete="off"
                 />
               </FormField>
             </div>
@@ -1652,7 +2131,7 @@ export const ClientDetailPage: React.FC = () => {
       {/* Add Task Modal */}
       <Modal open={taskModalOpen} onOpenChange={setTaskModalOpen}>
         <ModalContent size="md">
-          <form onSubmit={handleSaveTask} className="flex flex-col flex-1 h-full">
+          <form onSubmit={handleSaveTask} className="flex flex-col flex-1 h-full" autoComplete="off">
             <ModalHeader>
               <ModalTitle>Add Linked Task for {client.name}</ModalTitle>
               <ModalDescription className="text-xs text-text-muted">
@@ -1661,12 +2140,16 @@ export const ClientDetailPage: React.FC = () => {
             </ModalHeader>
 
             <div className="space-y-4 py-4 flex-1 overflow-y-auto">
-              <FormField label="Task Title" required>
+              <FormField label="Task Title" required error={taskErrors.title}>
                 <Input
                   placeholder="e.g. Color grade interview cut"
                   value={taskTitle}
-                  onChange={(e) => setTaskTitle(e.target.value)}
+                  onChange={(e) => {
+                    setTaskTitle(e.target.value);
+                    setTaskErrors((prev) => ({ ...prev, title: '' }));
+                  }}
                   autoFocus
+                  autoComplete="off"
                 />
               </FormField>
 
@@ -1680,19 +2163,29 @@ export const ClientDetailPage: React.FC = () => {
               </FormField>
 
               <div className="grid grid-cols-3 gap-4">
-                <FormField label="Assignee" required>
+                <FormField label="Assignee" required error={taskErrors.assignee}>
                   <Select
-                    value={taskAssignee || teamMembers[0]?.id || ''}
-                    onChange={(e) => setTaskAssignee(e.target.value)}
-                    options={teamMembers.map((m) => ({ value: m.id, label: m.name }))}
+                    value={taskAssignee}
+                    onChange={(e) => {
+                      setTaskAssignee(e.target.value);
+                      setTaskErrors((prev) => ({ ...prev, assignee: '' }));
+                    }}
+                    options={[
+                      { value: '', label: 'Select assignee' },
+                      ...teamMembers.map((m: User) => ({ value: m.id, label: m.name })),
+                    ]}
                   />
                 </FormField>
 
-                <FormField label="Priority" required>
+                <FormField label="Priority" required error={taskErrors.priority}>
                   <Select
                     value={taskPriority}
-                    onChange={(e) => setTaskPriority(e.target.value as TaskPriority)}
+                    onChange={(e) => {
+                      setTaskPriority(e.target.value as TaskPriority);
+                      setTaskErrors((prev) => ({ ...prev, priority: '' }));
+                    }}
                     options={[
+                      { value: '', label: 'Select priority' },
                       { value: 'low', label: 'Low' },
                       { value: 'medium', label: 'Medium' },
                       { value: 'high', label: 'High' },
@@ -1701,11 +2194,15 @@ export const ClientDetailPage: React.FC = () => {
                   />
                 </FormField>
 
-                <FormField label="Due Date" required>
+                <FormField label="Due Date" required error={taskErrors.dueDate}>
                   <Input
                     type="date"
                     value={taskDueDate}
-                    onChange={(e) => setTaskDueDate(e.target.value)}
+                    onChange={(e) => {
+                      setTaskDueDate(e.target.value);
+                      setTaskErrors((prev) => ({ ...prev, dueDate: '' }));
+                    }}
+                    autoComplete="off"
                   />
                 </FormField>
               </div>
@@ -1732,6 +2229,16 @@ export const ClientDetailPage: React.FC = () => {
           </form>
         </ModalContent>
       </Modal>
+
+      {/* Renew Billing Cycle Modal */}
+      {cycleToRenew && (
+        <RenewCycleModal
+          open={renewModalOpen}
+          onOpenChange={setRenewModalOpen}
+          client={client}
+          cycle={cycleToRenew}
+        />
+      )}
     </div>
   );
 };

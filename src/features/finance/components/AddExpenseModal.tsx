@@ -61,19 +61,24 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   const updateExpenseMutation = useUpdateExpense();
   const { success, error } = useToast();
 
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const [expenseType, setExpenseType] = useState<ExpenseType>('client');
-  const [clientId, setClientId] = useState<string>('');
+  const [date, setDate] = useState('');
+  const [expenseType, setExpenseType] = useState<ExpenseType | ''>(
+    prefilledClientId ? 'client' : ''
+  );
+  const [clientId, setClientId] = useState<string>(prefilledClientId || '');
   const [projectLabel, setProjectLabel] = useState<string>('');
 
-  // Line items state for batch creation
+  // Line items state for batch creation: opens empty with no pre-selected values
   const [items, setItems] = useState<ExpenseLineItem[]>([
-    { id: '1', category: 'travel', amount: 500, note: '' },
+    { id: '1', category: '' as any, amount: '' as any, note: '' },
   ]);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    if (!open) return;
+
     if (editingExpense) {
-      setDate(editingExpense.date);
+      setDate(editingExpense.date || '');
       setExpenseType(editingExpense.type || (editingExpense.clientId ? 'client' : 'agency'));
       setClientId(editingExpense.clientId || '');
       setProjectLabel(editingExpense.projectLabel || '');
@@ -86,23 +91,19 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
         },
       ]);
     } else {
-      setDate(new Date().toISOString().split('T')[0]);
-      if (prefilledClientId) {
-        setExpenseType('client');
-        setClientId(prefilledClientId);
-      } else {
-        setExpenseType('client');
-        setClientId(clients[0]?.id || '');
-      }
+      setDate('');
+      setExpenseType(prefilledClientId ? 'client' : '');
+      setClientId(prefilledClientId || '');
       setProjectLabel('');
-      setItems([{ id: '1', category: 'travel', amount: 500, note: '' }]);
+      setItems([{ id: '1', category: '' as any, amount: '' as any, note: '' }]);
     }
-  }, [editingExpense, open, prefilledClientId, clients]);
+    setFormErrors({});
+  }, [editingExpense, open, prefilledClientId]);
 
   const handleAddItem = () => {
     setItems((prev) => [
       ...prev,
-      { id: `item-${Date.now()}`, category: 'equipment', amount: 1000, note: '' },
+      { id: `item-${Date.now()}`, category: '' as any, amount: '' as any, note: '' },
     ]);
   };
 
@@ -122,18 +123,26 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (expenseType === 'client' && !clientId) {
-      error('Client Required', 'Please select a client for this client expense.');
-      return;
+    const errs: Record<string, string> = {};
+    if (!date) errs.date = 'Expense date is required';
+    if (!expenseType) errs.expenseType = 'Please choose expense type';
+    if (expenseType === 'client' && !clientId) errs.clientId = 'Please select a client';
+
+    const hasInvalid = items.some(
+      (item) => !item.category || !item.amount || Number(item.amount) <= 0 || !item.note.trim()
+    );
+    if (hasInvalid) {
+      errs.items = 'Please ensure all items have a category, note, and positive amount.';
     }
 
-    const invalidItem = items.find((i) => i.amount <= 0 || !i.note.trim());
-    if (invalidItem) {
-      error('Incomplete Fields', 'Please enter a description note and valid amount for all expense items.');
+    if (Object.keys(errs).length > 0) {
+      setFormErrors(errs);
+      error('Validation Error', 'Please complete all required fields.');
       return;
     }
 
     try {
+      const finalType = expenseType as import('@/types').ExpenseType;
       if (editingExpense) {
         // Edit single expense
         const single = items[0];
@@ -141,8 +150,8 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
           id: editingExpense.id,
           data: {
             date,
-            type: expenseType,
-            clientId: expenseType === 'client' ? clientId : undefined,
+            type: finalType,
+            clientId: finalType === 'client' ? clientId : undefined,
             projectLabel: projectLabel.trim() || undefined,
             category: single.category,
             amount: single.amount,
@@ -155,8 +164,8 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
         const single = items[0];
         await createExpenseMutation.mutateAsync({
           date,
-          type: expenseType,
-          clientId: expenseType === 'client' ? clientId : undefined,
+          type: finalType,
+          clientId: finalType === 'client' ? clientId : undefined,
           projectLabel: projectLabel.trim() || undefined,
           category: single.category,
           amount: single.amount,
@@ -167,8 +176,8 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
         // Batch create
         const batchData = items.map((item) => ({
           date,
-          type: expenseType,
-          clientId: expenseType === 'client' ? clientId : undefined,
+          type: finalType,
+          clientId: finalType === 'client' ? clientId : undefined,
           projectLabel: projectLabel.trim() || undefined,
           category: item.category,
           amount: item.amount,
@@ -196,7 +205,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   return (
     <Modal open={open} onOpenChange={onOpenChange}>
       <ModalContent size="lg">
-        <form onSubmit={handleSubmit} className="flex flex-col h-full flex-1">
+        <form onSubmit={handleSubmit} autoComplete="off" className="flex flex-col h-full flex-1">
           <ModalHeader className="border-b border-border pb-3">
             <ModalTitle className="flex items-center gap-2 text-base font-bold">
               <Receipt className="w-5 h-5 text-primary-600" />
@@ -211,11 +220,16 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
             {/* Top row: Expense Type & Date */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="text-xs font-bold text-text block mb-1.5">Expense Type</label>
+                <label className="text-xs font-bold text-text block mb-1.5">
+                  Expense Type <span className="text-rose-500">*</span>
+                </label>
                 <div className="grid grid-cols-2 gap-2 bg-surface-subtle p-1 rounded-control border border-border">
                   <button
                     type="button"
-                    onClick={() => setExpenseType('client')}
+                    onClick={() => {
+                      setExpenseType('client');
+                      if (formErrors.expenseType) setFormErrors((prev) => ({ ...prev, expenseType: '' }));
+                    }}
                     disabled={lockClient}
                     className={`py-1.5 px-3 text-xs font-bold rounded transition-colors ${
                       expenseType === 'client'
@@ -227,7 +241,10 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setExpenseType('agency')}
+                    onClick={() => {
+                      setExpenseType('agency');
+                      if (formErrors.expenseType) setFormErrors((prev) => ({ ...prev, expenseType: '' }));
+                    }}
                     disabled={lockClient}
                     className={`py-1.5 px-3 text-xs font-bold rounded transition-colors ${
                       expenseType === 'agency'
@@ -238,18 +255,27 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                     Agency (General)
                   </button>
                 </div>
+                {formErrors.expenseType && (
+                  <p className="text-[10px] text-rose-500 font-medium mt-1">{formErrors.expenseType}</p>
+                )}
                 <span className="text-[10px] text-text-muted mt-1 block">
                   {expenseType === 'client'
                     ? 'Tied to a specific client, deducts from client profit'
-                    : 'Agency overhead: salaries, studio rent, general software'}
+                    : expenseType === 'agency'
+                    ? 'Agency overhead: salaries, studio rent, general software'
+                    : 'Choose whether this expense is for a client or general agency overhead'}
                 </span>
               </div>
 
-              <FormField label="Expense Date" required>
+              <FormField label="Expense Date" required error={formErrors.date}>
                 <Input
                   type="date"
                   value={date}
-                  onChange={(e) => setDate(e.target.value)}
+                  onChange={(e) => {
+                    setDate(e.target.value);
+                    if (formErrors.date) setFormErrors((prev) => ({ ...prev, date: '' }));
+                  }}
+                  className={formErrors.date ? 'border-rose-500' : ''}
                 />
               </FormField>
             </div>
@@ -257,16 +283,25 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
             {/* Client Picker & Project / Shoot Label */}
             {expenseType === 'client' && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-primary-50/40 p-3 rounded-control border border-primary-100">
-                <FormField label="Assigned Client" required>
+                <FormField label="Assigned Client" required error={formErrors.clientId}>
                   <Select
                     value={clientId}
-                    onChange={(e) => setClientId(e.target.value)}
+                    placeholder="Select client..."
+                    onChange={(e) => {
+                      setClientId(e.target.value);
+                      if (formErrors.clientId) setFormErrors((prev) => ({ ...prev, clientId: '' }));
+                    }}
                     disabled={lockClient}
                     options={clients.map((c) => ({
                       value: c.id,
                       label: `${c.name} (${c.business})`,
                     }))}
                   />
+                  {lockClient && (
+                    <span className="text-[10px] text-primary-700 font-medium mt-1 inline-block">
+                      Locked to current client dossier
+                    </span>
+                  )}
                 </FormField>
 
                 <FormField label="Project / Shoot Group Label" hint="e.g. Shoot for Balaji Catering">
@@ -300,6 +335,12 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                 )}
               </div>
 
+              {formErrors.items && (
+                <p className="text-[11px] text-rose-500 font-semibold p-2.5 bg-rose-50 rounded border border-rose-200">
+                  {formErrors.items}
+                </p>
+              )}
+
               <div className="space-y-2.5">
                 {items.map((item, idx) => (
                   <div
@@ -312,6 +353,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                       </span>
                       <Select
                         value={item.category}
+                        placeholder="Select category..."
                         onChange={(e) =>
                           handleUpdateItem(item.id, 'category', e.target.value as ExpenseCategory)
                         }
@@ -325,7 +367,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                         Item Description / Note
                       </span>
                       <Input
-                        placeholder="e.g. Petrol ₹200 or Camera rental"
+                        placeholder="e.g. Petrol or Camera rental"
                         value={item.note}
                         onChange={(e) => handleUpdateItem(item.id, 'note', e.target.value)}
                         className="text-xs h-8"
@@ -338,6 +380,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                       </span>
                       <MoneyInput
                         value={item.amount}
+                        placeholder="0"
                         onChange={(val) => handleUpdateItem(item.id, 'amount', val)}
                         className="text-xs h-8"
                       />

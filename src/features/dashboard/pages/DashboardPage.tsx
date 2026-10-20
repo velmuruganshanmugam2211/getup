@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { InlineMonthPicker } from '@/components/ui/InlineMonthPicker';
 import { LoadingState } from '@/components/feedback/LoadingState';
@@ -7,6 +7,7 @@ import { useDashboardData } from '../hooks/useDashboardData';
 import { DashboardStats } from '../components/DashboardStats';
 import { PackageUsageMeter } from '../components/PackageUsageMeter';
 import { OverduePaymentsBanner } from '../components/OverduePaymentsBanner';
+import { RenewalDueBanner } from '../components/RenewalDueBanner';
 import { PendingCollectionsWidget } from '../components/PendingCollectionsWidget';
 import { TopExpensesWidget } from '../components/TopExpensesWidget';
 import { TodayAndTomorrowWidget } from '../components/TodayAndTomorrowWidget';
@@ -17,10 +18,30 @@ import { TasksDueWidget } from '../components/TasksDueWidget';
 import { ActivityFeedWidget } from '../components/ActivityFeedWidget';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { RenewCycleModal } from '@/features/clients/components/RenewCycleModal';
+import { Client, BillingCycle } from '@/types';
+import { useQueryClient } from '@tanstack/react-query';
 
 export const DashboardPage: React.FC = () => {
   const { month, setMonth, formattedMonth } = useMonthRange('2026-10');
   const { data, isLoading, isError, refetch } = useDashboardData(month);
+  const queryClient = useQueryClient();
+
+  // Renew modal state
+  const [renewModalOpen, setRenewModalOpen] = useState(false);
+  const [renewClient, setRenewClient] = useState<Client | null>(null);
+  const [renewCycle, setRenewCycle] = useState<BillingCycle | null>(null);
+
+  const handleOpenRenew = (client: Client, cycle: BillingCycle) => {
+    setRenewClient(client);
+    setRenewCycle(cycle);
+    setRenewModalOpen(true);
+  };
+
+  const handleRenewSuccess = () => {
+    queryClient.invalidateQueries();
+    refetch();
+  };
 
   if (isLoading) {
     return <LoadingState message="Loading agency dashboard..." fullPage />;
@@ -61,6 +82,11 @@ export const DashboardPage: React.FC = () => {
         }
       />
 
+      {/* Renewal Due Alert Banner */}
+      {data.renewalDueClients && data.renewalDueClients.length > 0 && (
+        <RenewalDueBanner items={data.renewalDueClients} onOpenRenew={handleOpenRenew} />
+      )}
+
       {/* Overdue Payments Alert */}
       <OverduePaymentsBanner overduePayments={data.overduePayments} />
 
@@ -93,6 +119,17 @@ export const DashboardPage: React.FC = () => {
         <TasksDueWidget />
         <ActivityFeedWidget />
       </div>
+
+      {/* Renew Cycle Modal */}
+      {renewClient && renewCycle && (
+        <RenewCycleModal
+          open={renewModalOpen}
+          onOpenChange={setRenewModalOpen}
+          client={renewClient}
+          cycle={renewCycle}
+          onSuccess={handleRenewSuccess}
+        />
+      )}
     </div>
   );
 };

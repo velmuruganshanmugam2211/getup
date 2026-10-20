@@ -1,6 +1,13 @@
-import { clientService, financeService, taskService, deliverableService } from '@/services';
-import { Client, Payment, Expense, Task, Deliverable, Role } from '@/types';
+import {
+  clientService,
+  financeService,
+  taskService,
+  deliverableService,
+  billingCycleService,
+} from '@/services';
+import { Client, Payment, Expense, Task, Deliverable, Role, BillingCycle } from '@/types';
 import { computeAgencyMetrics, computeAllClientsMetrics } from '@/lib/selectors';
+import { isCycleRenewalDue, getCycleDaysRemaining, deriveCycleStatus } from '@/lib/cycleUtils';
 
 export interface ClientDeliveryUsage {
   client: Client;
@@ -35,6 +42,14 @@ export interface PendingClientItem {
   isOverdue: boolean;
 }
 
+export interface RenewalDueItem {
+  client: Client;
+  cycle: BillingCycle;
+  daysRemaining: number;
+  isExpired: boolean;
+  statusLabel: string;
+}
+
 export interface DashboardSummary {
   month: string;
   // Client KPIs
@@ -63,6 +78,9 @@ export interface DashboardSummary {
   pendingClients: PendingClientItem[];
   topExpenses: Expense[];
 
+  // Renewal alerts
+  renewalDueClients: RenewalDueItem[];
+
   // Per-client usage (for package usage meter)
   clientUsage: ClientDeliveryUsage[];
 
@@ -73,17 +91,18 @@ export interface DashboardSummary {
 
 export const dashboardService = {
   async getDashboardSummary(month: string, _role?: Role, userId?: string): Promise<DashboardSummary> {
-    const [clients, allPayments, allExpenses, tasks, allDeliverables] = await Promise.all([
+    const [clients, allPayments, allExpenses, tasks, allDeliverables, allCycles] = await Promise.all([
       clientService.getClients(),
       financeService.getPayments(),
       financeService.getExpenses(),
       taskService.getTasks(),
       deliverableService.getDeliverables(),
+      billingCycleService.getCycles(),
     ]);
 
     // Use single source of truth selectors
-    const metrics = computeAgencyMetrics(clients, allPayments, allExpenses, allDeliverables, month);
-    const clientMetrics = computeAllClientsMetrics(clients, allPayments, allExpenses, allDeliverables, month);
+    const metrics = computeAgencyMetrics(clients, allPayments, allExpenses, allDeliverables, month, allCycles);
+    const clientMetrics = computeAllClientsMetrics(clients, allPayments, allExpenses, allDeliverables, month, allCycles);
 
     const activeClients = clients.filter((c) => c.status === 'active');
     const onboardedThisMonth = clients.filter((c) => c.onboardedOn?.startsWith(month));
@@ -151,6 +170,35 @@ export const dashboardService = {
       }))
       .sort((a, b) => b.pending - a.pending);
 
+    // Renewal Due calculation (<= 3 days or renewal_pending)
+    const todayStr = new Date().toISOString().split('T')[0];
+    const renewalDueClients: RenewalDueItem[] = [];
+    for (const client of activeClients) {
+      const clientCycles = allCycles.filter((c) => c.clientId === client.id);
+      if (clientCycles.length === 0) continue;
+
+      const currentCycle =
+        (client.currentCycleId ? clientCycles.find((c) => c.id === client.currentCycleId) : null) ||
+        [...clientCycles].sort((a, b) => b.cycleNumber - a.cycleNumber)[0];
+
+      if (currentCycle && isCycleRenewalDue(currentCycle, todayStr)) {
+        const derived = deriveCycleStatus(currentCycle, todayStr);
+        const daysLeft = getCycleDaysRemaining(currentCycle, todayStr);
+        renewalDueClients.push({
+          client,
+          cycle: currentCycle,
+          daysRemaining: daysLeft,
+          isExpired: derived === 'renewal_pending',
+          statusLabel:
+            derived === 'renewal_pending'
+              ? 'Ended – renewal pending'
+              : daysLeft === 0
+              ? 'Ends today'
+              : `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`,
+        });
+      }
+    }
+
     // Recent/top expenses this month
     const currentMonthExpenses = allExpenses
       .filter((e) => e.date.startsWith(month))
@@ -186,6 +234,7 @@ export const dashboardService = {
       overduePayments,
       pendingClients,
       topExpenses,
+      renewalDueClients,
       clientUsage,
       workerTasks,
       workerDeliverables,

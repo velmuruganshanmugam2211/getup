@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { StatCard } from '@/components/data-display/StatCard';
 import { StatusBadge } from '@/components/data-display/StatusBadge';
@@ -22,14 +23,21 @@ import {
 } from '@/components/ui/Modal';
 import { FilterPopover, ActiveFilterChipsRow } from '@/components/ui/FilterPopover';
 import { AddClientDrawer } from '../components/AddClientDrawer';
+import { RenewCycleModal } from '../components/RenewCycleModal';
 import { useClients, useDeleteClient } from '../hooks/useClients';
 import { useQuery } from '@tanstack/react-query';
-import { financeService, deliverableService } from '@/services';
+import { financeService, deliverableService, billingCycleService } from '@/services';
 import { useDisclosure } from '@/hooks/useDisclosure';
 import { useToast } from '@/components/feedback/Toast';
 import { Can } from '@/components/feedback/Can';
-import { Client, Payment, Expense, Deliverable } from '@/types';
+import { Client, Payment, Expense, Deliverable, BillingCycle } from '@/types';
 import { formatINR, formatDate } from '@/lib/format';
+import {
+  deriveCycleStatus,
+  getCycleDaysRemaining,
+  isCycleRenewalDue,
+  formatCycleDateRange,
+} from '@/lib/cycleUtils';
 import {
   computeClientFinancials,
   computeClientDeliverables,
@@ -63,9 +71,14 @@ interface ClientItemWithMetrics {
   client: Client;
   financials: ClientFinancialMetrics;
   deliverables: ClientDeliverablesMetrics;
+  clientCycles: BillingCycle[];
+  activeCycle?: BillingCycle;
+  isRenewalDue: boolean;
+  daysRemaining: number | null;
 }
 
 export const ClientsPage: React.FC = () => {
+  const queryClient = useQueryClient();
   const { data: clients = [], isLoading: clientsLoading } = useClients();
   const deleteClientMutation = useDeleteClient();
   const { success, error } = useToast();
@@ -74,6 +87,7 @@ export const ClientsPage: React.FC = () => {
   const addDrawer = useDisclosure();
   const [clientToEdit, setClientToEdit] = useState<Client | null>(null);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
+  const [renewTarget, setRenewTarget] = useState<{ client: Client; cycle: BillingCycle } | null>(null);
 
   // View state & filters
   const [viewMode, setViewMode] = useState<'card' | 'table'>('card');
@@ -98,19 +112,43 @@ export const ClientsPage: React.FC = () => {
     queryFn: () => deliverableService.getDeliverables({}),
   });
 
+  const { data: allCycles = [] } = useQuery<BillingCycle[]>({
+    queryKey: ['billingCycles'],
+    queryFn: () => billingCycleService.getCycles(),
+  });
+
   // Calculate metrics per client using central selectors
   const clientsWithMetrics = useMemo<ClientItemWithMetrics[]>(() => {
-    return clients.map((client) => ({
-      client,
-      financials: computeClientFinancials(client, allPayments, allExpenses),
-      deliverables: computeClientDeliverables(client, allDeliverables),
-    }));
-  }, [clients, allPayments, allExpenses, allDeliverables]);
+    return clients.map((client) => {
+      const clientCycles = allCycles
+        .filter((c) => c.clientId === client.id)
+        .sort((a, b) => a.cycleNumber - b.cycleNumber);
+      
+      const activeCycle =
+        clientCycles.find((c) => {
+          const s = deriveCycleStatus(c);
+          return s === 'active' || s === 'renewal_pending';
+        }) || clientCycles[clientCycles.length - 1];
+
+      const isRenewalDue = activeCycle ? isCycleRenewalDue(activeCycle) : false;
+      const daysRemaining = activeCycle ? getCycleDaysRemaining(activeCycle) : null;
+
+      return {
+        client,
+        financials: computeClientFinancials(client, allPayments, allExpenses, allCycles),
+        deliverables: computeClientDeliverables(client, allDeliverables, allCycles),
+        clientCycles,
+        activeCycle,
+        isRenewalDue,
+        daysRemaining,
+      };
+    });
+  }, [clients, allPayments, allExpenses, allDeliverables, allCycles]);
 
   // Overall agency metrics from shared selectors (matches Dashboard & Finance!)
   const agencyMetrics = useMemo(() => {
-    return computeAgencyMetrics(clients, allPayments, allExpenses, allDeliverables);
-  }, [clients, allPayments, allExpenses, allDeliverables]);
+    return computeAgencyMetrics(clients, allPayments, allExpenses, allDeliverables, allCycles);
+  }, [clients, allPayments, allExpenses, allDeliverables, allCycles]);
 
   // Filtering & Sorting
   const filteredAndSortedClients = useMemo(() => {
@@ -477,7 +515,7 @@ export const ClientsPage: React.FC = () => {
       ) : viewMode === 'card' ? (
         /* RESPONSIVE CARD GRID (1 col mobile, 2 col tablet, 3 col desktop) */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredAndSortedClients.map(({ client, financials, deliverables: dlv }) => (
+          {filteredAndSortedClients.map(({ client, financials, deliverables: dlv, clientCycles, activeCycle, isRenewalDue, daysRemaining }) => (
             <Card
               key={client.id}
               onClick={() => navigate(`/clients/${client.id}`)}
@@ -529,6 +567,34 @@ export const ClientsPage: React.FC = () => {
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
+                </div>
+
+                {/* Cycle Summary Strip */}
+                <div className="flex items-center justify-between text-[11px] bg-surface-subtle px-2.5 py-1.5 rounded-control border border-border/70" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-2 h-2 rounded-full bg-primary-600 shrink-0" />
+                    <span className="font-bold text-text truncate">
+                      {activeCycle ? `Cycle ${activeCycle.cycleNumber} of ${Math.max(clientCycles.length, 1)}` : 'No cycle'}
+                    </span>
+                    {activeCycle && (
+                      <span className="text-[10px] text-text-muted hidden sm:inline truncate">
+                        · {formatCycleDateRange(activeCycle.startDate, activeCycle.endDate)}
+                      </span>
+                    )}
+                  </div>
+                  {isRenewalDue && activeCycle ? (
+                    <button
+                      type="button"
+                      onClick={() => setRenewTarget({ client, cycle: activeCycle })}
+                      className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200 transition-colors shrink-0 flex items-center gap-1"
+                    >
+                      Renewal due · Renew
+                    </button>
+                  ) : activeCycle ? (
+                    <span className="text-[10px] font-semibold text-text-muted shrink-0">
+                      {daysRemaining !== null ? (daysRemaining === 0 ? 'Ends today' : `${daysRemaining}d left`) : ''}
+                    </span>
+                  ) : null}
                 </div>
 
                 {/* Contact row with Tooltip */}
@@ -622,7 +688,14 @@ export const ClientsPage: React.FC = () => {
                             <span className="block text-[9px] text-text-muted font-normal uppercase">
                               {typeMetric.label}
                             </span>
-                            {typeMetric.done} / {typeMetric.promised}
+                            <span className="tabular-nums">
+                              {typeMetric.done} / {typeMetric.promised}
+                            </span>
+                            {typeMetric.extra > 0 && (
+                              <span className="inline-block ml-1 px-1 py-0.2 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800">
+                                +{typeMetric.extra}
+                              </span>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -887,6 +960,20 @@ export const ClientsPage: React.FC = () => {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      {/* Renew Cycle Modal */}
+      {renewTarget && (
+        <RenewCycleModal
+          open={!!renewTarget}
+          onOpenChange={(open) => !open && setRenewTarget(null)}
+          client={renewTarget.client}
+          cycle={renewTarget.cycle}
+          onSuccess={() => {
+            queryClient.invalidateQueries();
+            setRenewTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 };

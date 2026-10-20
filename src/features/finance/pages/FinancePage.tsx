@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/Modal';
 import { AddExpenseModal } from '../components/AddExpenseModal';
 import { useQuery } from '@tanstack/react-query';
-import { financeService, deliverableService } from '@/services';
+import { financeService, deliverableService, billingCycleService } from '@/services';
 import {
   useClients,
   useCreatePayment,
@@ -37,6 +37,7 @@ import {
   Deliverable,
   PaymentMode,
   PaymentStatus,
+  BillingCycle,
 } from '@/types';
 import { formatINR, formatDate } from '@/lib/format';
 import {
@@ -90,30 +91,36 @@ export const FinancePage: React.FC = () => {
     queryFn: () => deliverableService.getDeliverables({}),
   });
 
+  const { data: allCycles = [] } = useQuery<BillingCycle[]>({
+    queryKey: ['billingCycles'],
+    queryFn: () => billingCycleService.getCycles(),
+  });
+
   // Central selectors for agency & client financials
   const agencyMetrics = useMemo(() => {
-    return computeAgencyMetrics(clients, payments, expenses, deliverables);
-  }, [clients, payments, expenses, deliverables]);
+    return computeAgencyMetrics(clients, payments, expenses, deliverables, allCycles);
+  }, [clients, payments, expenses, deliverables, allCycles]);
 
   const clientSummaries = useMemo(() => {
     return clients.map((c) => ({
       client: c,
-      fin: computeClientFinancials(c, payments, expenses),
+      fin: computeClientFinancials(c, payments, expenses, undefined, allCycles),
     }));
-  }, [clients, payments, expenses]);
+  }, [clients, payments, expenses, allCycles]);
 
-  // Payment modal state
+  // Payment modal state - opens empty with no pre-selected values
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
   const [paymentToDelete, setPaymentToDelete] = useState<Payment | null>(null);
 
   const [payClientId, setPayClientId] = useState('');
-  const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
-  const [payMonth, setPayMonth] = useState(new Date().toISOString().substring(0, 7));
-  const [payAmount, setPayAmount] = useState<number>(50000);
-  const [payMode, setPayMode] = useState<PaymentMode>('bank_transfer');
-  const [payStatus, setPayStatus] = useState<PaymentStatus>('paid');
+  const [payDate, setPayDate] = useState('');
+  const [payMonth, setPayMonth] = useState('');
+  const [payAmount, setPayAmount] = useState<number | null>(null);
+  const [payMode, setPayMode] = useState<PaymentMode | ''>('');
+  const [payStatus, setPayStatus] = useState<PaymentStatus | ''>('');
   const [payNotes, setPayNotes] = useState('');
+  const [payFormErrors, setPayFormErrors] = useState<Record<string, string>>({});
 
   // Expense modal state
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
@@ -147,13 +154,14 @@ export const FinancePage: React.FC = () => {
   // Payment modal handlers
   const handleOpenAddPayment = () => {
     setEditingPayment(null);
-    setPayClientId(clients[0]?.id || '');
-    setPayDate(new Date().toISOString().split('T')[0]);
-    setPayMonth(new Date().toISOString().substring(0, 7));
-    setPayAmount(clients[0]?.monthlyFee || 50000);
-    setPayMode('bank_transfer');
-    setPayStatus('paid');
+    setPayClientId('');
+    setPayDate('');
+    setPayMonth('');
+    setPayAmount(null);
+    setPayMode('');
+    setPayStatus('');
     setPayNotes('');
+    setPayFormErrors({});
     setPaymentModalOpen(true);
   };
 
@@ -166,50 +174,58 @@ export const FinancePage: React.FC = () => {
     setPayMode(p.mode || 'bank_transfer');
     setPayStatus(p.status);
     setPayNotes(p.notes || '');
+    setPayFormErrors({});
     setPaymentModalOpen(true);
   };
 
   const handleSavePayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!payClientId) {
-      error('Client Required', 'Please select a client for this payment.');
-      return;
+    const errs: Record<string, string> = {};
+    if (!payClientId) errs.payClientId = 'Please select a client';
+    if (!payDate) errs.payDate = 'Payment date is required';
+    if (payAmount === null || payAmount === undefined || payAmount <= 0) {
+      errs.payAmount = 'Valid amount is required (greater than 0)';
     }
-    if (payAmount <= 0) {
-      error('Invalid Amount', 'Payment amount must be greater than zero.');
+    if (!payMode) errs.payMode = 'Please select payment mode';
+    if (!payStatus) errs.payStatus = 'Please select payment status';
+
+    if (Object.keys(errs).length > 0) {
+      setPayFormErrors(errs);
+      error('Validation Error', 'Please complete all required fields.');
       return;
     }
 
     try {
+      const computedMonth = payMonth.trim() || (payDate ? payDate.substring(0, 7) : '2026-10');
       if (editingPayment) {
         await updatePaymentMutation.mutateAsync({
           id: editingPayment.id,
           data: {
             clientId: payClientId,
             date: payDate,
-            month: payMonth,
-            amount: payAmount,
-            mode: payMode,
-            status: payStatus,
+            month: computedMonth,
+            amount: Number(payAmount),
+            mode: payMode as PaymentMode,
+            status: payStatus as PaymentStatus,
             notes: payNotes.trim() || undefined,
           },
         });
-        success('Payment Updated', `Updated payment of ${formatINR(payAmount)}.`);
+        success('Payment Updated', 'Payment record has been updated.');
       } else {
         await createPaymentMutation.mutateAsync({
           clientId: payClientId,
           date: payDate,
-          month: payMonth,
-          amount: payAmount,
-          mode: payMode,
-          status: payStatus,
+          month: computedMonth,
+          amount: Number(payAmount),
+          mode: payMode as PaymentMode,
+          status: payStatus as PaymentStatus,
           notes: payNotes.trim() || undefined,
         });
-        success('Payment Recorded', `Logged payment of ${formatINR(payAmount)}.`);
+        success('Payment Recorded', `Recorded payment of ${formatINR(Number(payAmount))}.`);
       }
       setPaymentModalOpen(false);
     } catch {
-      error('Save Failed', 'Unable to record payment.');
+      error('Payment Failed', 'Could not save payment. Please try again.');
     }
   };
 
@@ -1345,7 +1361,7 @@ export const FinancePage: React.FC = () => {
       {/* Add / Edit Payment Modal */}
       <Modal open={paymentModalOpen} onOpenChange={setPaymentModalOpen}>
         <ModalContent size="md">
-          <form onSubmit={handleSavePayment} className="flex flex-col flex-1 h-full">
+          <form onSubmit={handleSavePayment} autoComplete="off" className="flex flex-col flex-1 h-full">
             <ModalHeader>
               <ModalTitle>
                 {editingPayment ? 'Edit Client Payment' : 'Record Client Payment'}
@@ -1356,29 +1372,37 @@ export const FinancePage: React.FC = () => {
             </ModalHeader>
 
             <div className="space-y-4 py-4 flex-1 overflow-y-auto">
-              <FormField label="Client" required>
+              <FormField label="Client" required error={payFormErrors.payClientId}>
                 <Select
                   value={payClientId}
-                  onChange={(e) => setPayClientId(e.target.value)}
+                  placeholder="Select client..."
+                  onChange={(e) => {
+                    setPayClientId(e.target.value);
+                    if (payFormErrors.payClientId) setPayFormErrors((prev) => ({ ...prev, payClientId: '' }));
+                  }}
                   options={clients.map((c) => ({
                     value: c.id,
-                    label: `${c.name} (Retainer: ${formatINR(c.monthlyFee)}/mo)`,
+                    label: `${c.name} (${c.business})`,
                   }))}
                 />
               </FormField>
 
               <div className="grid grid-cols-2 gap-4">
-                <FormField label="Payment Date" required>
+                <FormField label="Payment Date" required error={payFormErrors.payDate}>
                   <Input
                     type="date"
                     value={payDate}
-                    onChange={(e) => setPayDate(e.target.value)}
+                    onChange={(e) => {
+                      setPayDate(e.target.value);
+                      if (payFormErrors.payDate) setPayFormErrors((prev) => ({ ...prev, payDate: '' }));
+                    }}
+                    className={payFormErrors.payDate ? 'border-rose-500' : ''}
                   />
                 </FormField>
 
-                <FormField label="Month Covered (YYYY-MM)" required>
+                <FormField label="Month Covered (YYYY-MM)" hint="Auto-filled from date if empty">
                   <Input
-                    placeholder="YYYY-MM"
+                    placeholder="e.g. 2026-10"
                     value={payMonth}
                     onChange={(e) => setPayMonth(e.target.value)}
                   />
@@ -1386,14 +1410,25 @@ export const FinancePage: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-3 gap-4">
-                <FormField label="Amount (₹)" required>
-                  <MoneyInput value={payAmount} onChange={setPayAmount} />
+                <FormField label="Amount (₹)" required error={payFormErrors.payAmount}>
+                  <MoneyInput
+                    value={payAmount}
+                    placeholder="0"
+                    onChange={(val) => {
+                      setPayAmount(val);
+                      if (payFormErrors.payAmount) setPayFormErrors((prev) => ({ ...prev, payAmount: '' }));
+                    }}
+                  />
                 </FormField>
 
-                <FormField label="Payment Mode" required>
+                <FormField label="Payment Mode" required error={payFormErrors.payMode}>
                   <Select
                     value={payMode}
-                    onChange={(e) => setPayMode(e.target.value as PaymentMode)}
+                    placeholder="Select mode..."
+                    onChange={(e) => {
+                      setPayMode(e.target.value as PaymentMode);
+                      if (payFormErrors.payMode) setPayFormErrors((prev) => ({ ...prev, payMode: '' }));
+                    }}
                     options={[
                       { value: 'bank_transfer', label: 'Bank Transfer' },
                       { value: 'upi', label: 'UPI' },
@@ -1403,10 +1438,14 @@ export const FinancePage: React.FC = () => {
                   />
                 </FormField>
 
-                <FormField label="Payment Status" required>
+                <FormField label="Payment Status" required error={payFormErrors.payStatus}>
                   <Select
                     value={payStatus}
-                    onChange={(e) => setPayStatus(e.target.value as PaymentStatus)}
+                    placeholder="Select status..."
+                    onChange={(e) => {
+                      setPayStatus(e.target.value as PaymentStatus);
+                      if (payFormErrors.payStatus) setPayFormErrors((prev) => ({ ...prev, payStatus: '' }));
+                    }}
                     options={[
                       { value: 'paid', label: 'Paid' },
                       { value: 'pending', label: 'Pending' },

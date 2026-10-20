@@ -54,6 +54,29 @@ export interface Package {
   startDate?: string;
 }
 
+export interface BillingCyclePackage {
+  videos?: number;
+  posts?: number;
+  reels?: number;
+  stories?: number;
+}
+
+export type BillingCycleStatus = 'upcoming' | 'active' | 'renewal_pending' | 'completed';
+
+export interface BillingCycle extends BaseEntity {
+  clientId: string;
+  cycleNumber: number;
+  startDate: string; // 'YYYY-MM-DD'
+  endDate: string;   // 'YYYY-MM-DD' (startDate + 1 month - 1 day)
+  package: BillingCyclePackage; // snapshot of active package deliverables
+  feeAmount: Money;             // snapshot of monthly fee
+  renewedFromCycleId?: string;
+  carriedForward?: BillingCyclePackage; // unfinished deliverables added to this cycle
+  creditedExtra?: BillingCyclePackage;  // over-deliveries credited towards this cycle
+  renewalDecision?: 'renewed' | 'closed' | 'paused' | 'pending';
+  notes?: string;
+}
+
 export interface Client extends BaseEntity {
   name: string;
   business: string;
@@ -67,10 +90,12 @@ export interface Client extends BaseEntity {
   notes?: string;
   package?: Package;
   assignedWorkerIds?: string[];
+  currentCycleId?: string;
 }
 
 export interface Deliverable extends BaseEntity {
   clientId: string;
+  cycleId?: string;       // billing cycle reference
   type: DeliverableType;
   title: string;
   date: string;           // ISO date string
@@ -83,6 +108,7 @@ export interface Deliverable extends BaseEntity {
 
 export interface Payment extends BaseEntity {
   clientId: string;
+  cycleId?: string;       // billing cycle reference
   month: Month;
   amount: Money;
   date: string;           // date paid / date of record
@@ -100,6 +126,7 @@ export interface Expense extends BaseEntity {
   paidTo?: string;
   recurring?: boolean;
   clientId?: string;
+  cycleId?: string;       // billing cycle reference
   projectLabel?: string;
   userId?: string;
 }
@@ -148,7 +175,12 @@ export interface Notification extends BaseEntity {
   type:
     | 'meeting_reminder'
     | 'task_overdue'
+    | 'task_due_today'
+    | 'task_due_tomorrow'
     | 'payment_overdue'
+    | 'cycle_ending'
+    | 'cycle_expired'
+    | 'cycle_payment_due'
     | 'task_assigned'
     | 'system'
     | 'deliverable_added'
@@ -185,6 +217,7 @@ export interface AgencySettings {
   overdueAlertsEnabled: boolean;
   sidebarCollapsedDefault: boolean;
   dateFormat: string;
+  taskDueNotificationTime?: string; // e.g. "09:00"
 }
 
 export type Permission =
