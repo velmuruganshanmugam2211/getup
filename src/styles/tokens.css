@@ -1,0 +1,63 @@
+:root {
+  /* Brand */
+  --color-primary-50: #E6F4E6;
+  --color-primary-100: #C7E8C7;
+  --color-primary-200: #A2DAA2;
+  --color-primary-500: #0E9F0E;
+  --color-primary-600: #008000;
+  --color-primary-700: #006400;
+  --color-primary: #008000;
+
+  /* Accent (highlights only) */
+  --color-accent: #F59E0B;
+  --color-accent-hover: #D97706;
+  --color-accent-tint: #FEF3C7;
+
+  /* Neutrals */
+  --color-background: #F6F7FB;
+  --color-surface: #FFFFFF;
+  --color-surface-subtle: #F8FAFC;
+  --color-border: #E2E8F0;
+  --color-border-subtle: #F1F5F9;
+  --color-text: #0F172A;
+  --color-text-muted: #64748B;
+  --color-text-subtle: #94A3B8;
+
+  /* Semantic */
+  --color-success: #16A34A;
+  --color-success-tint: #DCFCE7;
+  --color-warning: #D97706;
+  --color-warning-tint: #FEF3C7;
+  --color-danger: #DC2626;
+  --color-danger-tint: #FEE2E2;
+  --color-info: #0284C7;
+  --color-info-tint: #E0F2FE;
+  --color-slate: #64748B;
+  --color-slate-tint: #F1F5F9;
+
+  /* Spacing Grid (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Border Radii */
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-pill: 9999px;
+
+  /* Layout dimensions */
+  --sidebar-width: 248px;
+  --sidebar-collapsed-width: 72px;
+  --topbar-height: 64px;
+  --content-max-width: 1280px;
+
+  /* Transitions */
+  --motion-duration: 150ms;
+  --motion-easing: cubic-bezier(0.16, 1, 0.3, 1);
+}

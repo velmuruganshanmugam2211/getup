@@ -1,0 +1,98 @@
+import React from 'react';
+import { PageHeader } from '@/components/layout/PageHeader';
+import { InlineMonthPicker } from '@/components/ui/InlineMonthPicker';
+import { LoadingState } from '@/components/feedback/LoadingState';
+import { useMonthRange } from '@/hooks/useMonthRange';
+import { useDashboardData } from '../hooks/useDashboardData';
+import { DashboardStats } from '../components/DashboardStats';
+import { PackageUsageMeter } from '../components/PackageUsageMeter';
+import { OverduePaymentsBanner } from '../components/OverduePaymentsBanner';
+import { PendingCollectionsWidget } from '../components/PendingCollectionsWidget';
+import { TopExpensesWidget } from '../components/TopExpensesWidget';
+import { TodayAndTomorrowWidget } from '../components/TodayAndTomorrowWidget';
+import { FinancialChartsWidget } from '../components/FinancialChartsWidget';
+import { ClientProfitabilityWidget } from '../components/ClientProfitabilityWidget';
+import { WorkerProductivityWidget } from '../components/WorkerProductivityWidget';
+import { TasksDueWidget } from '../components/TasksDueWidget';
+import { ActivityFeedWidget } from '../components/ActivityFeedWidget';
+import { AlertCircle, RefreshCw } from 'lucide-react';
+import { Button } from '@/components/ui/Button';
+
+export const DashboardPage: React.FC = () => {
+  const { month, setMonth, formattedMonth } = useMonthRange('2026-10');
+  const { data, isLoading, isError, refetch } = useDashboardData(month);
+
+  if (isLoading) {
+    return <LoadingState message="Loading agency dashboard..." fullPage />;
+  }
+
+  if (isError || !data) {
+    return (
+      <div className="p-8 text-center bg-surface border border-border rounded-card my-8">
+        <AlertCircle className="w-8 h-8 text-semantic-danger mx-auto mb-2" />
+        <h3 className="text-sm font-bold text-text">Failed to load dashboard metrics</h3>
+        <p className="text-xs text-text-muted mt-1 mb-4">Please try refreshing the metrics.</p>
+        <Button variant="primary" size="sm" onClick={() => refetch()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 pb-12">
+      {/* Header with Title and Slim Inline Month Picker */}
+      <PageHeader
+        title="Agency Control Dashboard"
+        subtitle={`Executive control panel for clients, deliverables, and finance — ${formattedMonth}`}
+        actions={
+          <div className="flex items-center gap-2">
+            <InlineMonthPicker month={month} onChange={setMonth} />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refetch()}
+              className="h-8 px-2.5 text-xs text-text-muted hover:text-text"
+              title="Refresh dashboard metrics"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+        }
+      />
+
+      {/* Overdue Payments Alert */}
+      <OverduePaymentsBanner overduePayments={data.overduePayments} />
+
+      {/* 8-Metric KPI Row */}
+      <DashboardStats data={data} />
+
+      {/* Grid Row 1: Today/Tomorrow Meetings & Notes + Client Package Delivery Health */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <TodayAndTomorrowWidget />
+        <PackageUsageMeter clientUsage={data.clientUsage} />
+      </div>
+
+      {/* Grid Row 2: 6-Month Revenue vs Expense & Expense by Category */}
+      <FinancialChartsWidget currentMonth={month} />
+
+      {/* Grid Row 3: Pending Collections (Top 5, overdue highlighted) & Top Expenses */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <PendingCollectionsWidget pendingClients={data.pendingClients} />
+        <TopExpensesWidget topExpenses={data.topExpenses} />
+      </div>
+
+      {/* Grid Row 4: Client Profitability Ranking (Best/Worst) & Worker Productivity */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <ClientProfitabilityWidget currentMonth={month} />
+        <WorkerProductivityWidget currentMonth={month} />
+      </div>
+
+      {/* Grid Row 5: Tasks Due & Overdue + Live Activity Feed */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <TasksDueWidget />
+        <ActivityFeedWidget />
+      </div>
+    </div>
+  );
+};

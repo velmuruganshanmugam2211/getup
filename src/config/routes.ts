@@ -1,0 +1,15 @@
+export const ROUTES = {
+  LOGIN: '/login',
+  DASHBOARD: '/dashboard',
+  CLIENTS: '/clients',
+  CLIENT_DETAIL: (id: string = ':id') => `/clients/${id}`,
+  FINANCE: '/finance',
+  FINANCE_PAYMENTS: '/finance/payments',
+  FINANCE_EXPENSES: '/finance/expenses',
+  FINANCE_SALARY: '/finance/salary',
+  TASKS: '/tasks',
+  CALENDAR: '/calendar',
+  TEAM: '/team',
+  REPORTS: '/reports',
+  SETTINGS: '/settings',
+} as const;
