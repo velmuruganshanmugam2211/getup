@@ -48,6 +48,12 @@ export const NAV_ITEMS: NavItem[] = [
     requiredPermission: 'team.read',
   },
   {
+    title: 'Calls',
+    href: ROUTES.CALLS,
+    icon: 'PhoneCall',
+    requiredPermission: 'calls.read',
+  },
+  {
     title: 'Reports',
     href: ROUTES.REPORTS,
     icon: 'BarChart3',

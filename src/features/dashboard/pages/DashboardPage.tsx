@@ -16,6 +16,7 @@ import { ClientProfitabilityWidget } from '../components/ClientProfitabilityWidg
 import { WorkerProductivityWidget } from '../components/WorkerProductivityWidget';
 import { TasksDueWidget } from '../components/TasksDueWidget';
 import { ActivityFeedWidget } from '../components/ActivityFeedWidget';
+import { CallsDashboardWidget } from '../components/CallsDashboardWidget';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { RenewCycleModal } from '@/features/clients/components/RenewCycleModal';
@@ -92,6 +93,9 @@ export const DashboardPage: React.FC = () => {
 
       {/* 8-Metric KPI Row */}
       <DashboardStats data={data} />
+
+      {/* Calls Today, Follow-ups Due & 7-Day Trend Widget (Super Admin Only) */}
+      <CallsDashboardWidget />
 
       {/* Grid Row 1: Today/Tomorrow Meetings & Notes + Client Package Delivery Health */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

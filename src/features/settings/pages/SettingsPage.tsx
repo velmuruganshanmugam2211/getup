@@ -93,12 +93,14 @@ export const SettingsPage: React.FC = () => {
   const [currency, setCurrency] = React.useState('INR');
   const [defaultBillingDay, setDefaultBillingDay] = React.useState(1);
   const [financialYearStart, setFinancialYearStart] = React.useState('04-01');
+  const [initialOpeningBalance, setInitialOpeningBalance] = React.useState<number | ''>('');
 
   // Notifications tab state
   const [browserNotifs, setBrowserNotifs] = React.useState(true);
   const [defaultReminder, setDefaultReminder] = React.useState<MeetingReminder>('10_min');
   const [overdueAlerts, setOverdueAlerts] = React.useState(true);
   const [taskDueTime, setTaskDueTime] = React.useState('09:00');
+  const [followUpTime, setFollowUpTime] = React.useState('09:00');
 
   // Appearance tab state
   const [sidebarCollapsedDefault, setSidebarCollapsedDefault] = React.useState(false);
@@ -124,10 +126,16 @@ export const SettingsPage: React.FC = () => {
       setCurrency(settings.currency || 'INR');
       setDefaultBillingDay(settings.defaultBillingDay || 1);
       setFinancialYearStart(settings.financialYearStart || '04-01');
+      setInitialOpeningBalance(
+        settings.initialOpeningBalance !== undefined && settings.initialOpeningBalance !== null
+          ? settings.initialOpeningBalance
+          : ''
+      );
       setBrowserNotifs(settings.browserNotificationsEnabled !== false);
       setDefaultReminder(settings.defaultMeetingReminder || '10_min');
       setOverdueAlerts(settings.overdueAlertsEnabled !== false);
       setTaskDueTime(settings.taskDueNotificationTime || '09:00');
+      setFollowUpTime(settings.followUpNotificationTime || '09:00');
       setSidebarCollapsedDefault(settings.sidebarCollapsedDefault || false);
       setDateFormat(settings.dateFormat || 'dd MMM yyyy');
     }
@@ -179,9 +187,10 @@ export const SettingsPage: React.FC = () => {
         currency,
         defaultBillingDay: Number(defaultBillingDay),
         financialYearStart,
+        initialOpeningBalance: initialOpeningBalance === '' ? undefined : Number(initialOpeningBalance),
       });
       queryClient.invalidateQueries({ queryKey: ['settings'] });
-      toast.success('Agency Settings Saved', 'Brand details, billing cycle, and tax info saved.');
+      toast.success('Agency Settings Saved', 'Brand details, billing cycle, tax info, and opening balance saved.');
     } catch (err: any) {
       toast.error('Save Failed', err.message || 'Could not save agency settings.');
     }
@@ -195,6 +204,7 @@ export const SettingsPage: React.FC = () => {
         defaultMeetingReminder: defaultReminder,
         overdueAlertsEnabled: overdueAlerts,
         taskDueNotificationTime: taskDueTime,
+        followUpNotificationTime: followUpTime,
       });
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       toast.success('Notification Preferences Saved', 'Alert rules and meeting reminder defaults updated.');
@@ -703,6 +713,22 @@ export const SettingsPage: React.FC = () => {
                         placeholder="04-01"
                       />
                     </FormField>
+
+                    <FormField
+                      label="Initial Cash Opening Balance (₹)"
+                      hint="Baseline cash balance for Cash Flow statements (one-time setup)"
+                    >
+                      <Input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="e.g. 10000"
+                        value={initialOpeningBalance}
+                        onChange={(e) =>
+                          setInitialOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))
+                        }
+                      />
+                    </FormField>
                   </div>
 
                   <FormField label="Registered Studio Address" required>
@@ -911,6 +937,20 @@ export const SettingsPage: React.FC = () => {
                         type="time"
                         value={taskDueTime}
                         onChange={(e) => setTaskDueTime(e.target.value)}
+                        className="w-36 text-xs"
+                      />
+                    </div>
+
+                    {/* Follow-up Due Today Notification Trigger Time */}
+                    <div className="p-3.5 rounded-control bg-surface-subtle border border-border space-y-2">
+                      <span className="text-xs font-bold text-text block">Follow-up Due Today Notification Trigger (Morning)</span>
+                      <p className="text-[11px] text-text-muted">
+                        Time of day when the system scans for and sends daily alerts for prospect follow-ups due today (default: 09:00 AM).
+                      </p>
+                      <Input
+                        type="time"
+                        value={followUpTime}
+                        onChange={(e) => setFollowUpTime(e.target.value)}
                         className="w-36 text-xs"
                       />
                     </div>

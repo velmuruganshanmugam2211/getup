@@ -22,12 +22,22 @@ export interface AddClientDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   clientToEdit?: Client | null;
+  initialLead?: {
+    id?: string;
+    businessName?: string;
+    contactPerson?: string;
+    phone?: string;
+    email?: string;
+  } | null;
+  onClientCreated?: (newClient: Client) => void;
 }
 
 export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
   isOpen,
   onClose,
   clientToEdit,
+  initialLead,
+  onClientCreated,
 }) => {
   const createClientMutation = useCreateClient();
   const updateClientMutation = useUpdateClient();
@@ -105,12 +115,12 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
         setTypeQuantities({ videos: '', posts: '', reels: '', stories: '' });
       }
     } else {
-      // Create mode starts COMPLETELY EMPTY
-      setName('');
+      // Create mode starts COMPLETELY EMPTY, unless explicitly converting from a Lead (allowed exception)
+      setName(initialLead?.businessName || '');
       setBusiness('');
-      setContactPerson('');
-      setPhone('');
-      setEmail('');
+      setContactPerson(initialLead?.contactPerson || '');
+      setPhone(initialLead?.phone || '');
+      setEmail(initialLead?.email || '');
       setStatus('');
       setMonthlyFee(null);
       setOnboardedOn('');
@@ -119,7 +129,7 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
       setTypeQuantities({ videos: '', posts: '', reels: '', stories: '' });
     }
     setFormErrors({});
-  }, [clientToEdit, isOpen]);
+  }, [clientToEdit, isOpen, initialLead]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -204,7 +214,7 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
         success('Client Updated', `${formData.name} details were successfully saved.`);
       } else {
         const tempClientId = `client-${Date.now()}`;
-        await createClientMutation.mutateAsync({
+        const created = await createClientMutation.mutateAsync({
           ...formData,
           package: {
             id: `pkg-${Date.now()}`,
@@ -217,6 +227,7 @@ export const AddClientDrawer: React.FC<AddClientDrawerProps> = ({
           },
         });
         success('Client Onboarded', `${formData.name} has been added to agency records.`);
+        onClientCreated?.(created);
       }
 
       onClose();

@@ -117,8 +117,11 @@ export interface Payment extends BaseEntity {
   notes?: string;
 }
 
+export type ExpenseNature = 'fixed' | 'variable';
+
 export interface Expense extends BaseEntity {
   type: ExpenseType;
+  expenseNature: ExpenseNature;
   category: ExpenseCategory;
   amount: Money;
   date: string;
@@ -129,6 +132,17 @@ export interface Expense extends BaseEntity {
   cycleId?: string;       // billing cycle reference
   projectLabel?: string;
   userId?: string;
+}
+
+export interface RecurringFixedExpense extends BaseEntity {
+  name: string;
+  category: ExpenseCategory;
+  amount: Money;
+  startMonth: Month; // 'YYYY-MM'
+  teamMemberId?: string;
+  active: boolean;
+  autoAdd: boolean; // auto add on 1st of month (off by default)
+  notes?: string;
 }
 
 export interface Salary extends BaseEntity {
@@ -153,21 +167,69 @@ export interface Task extends BaseEntity {
 }
 
 export type CalendarItemType = 'meeting' | 'note';
-export type MeetingReminder = 'at_time' | '10_min' | '30_min' | '1_hour' | '1_day';
+export type MeetingReminder = 'at_time' | '10_min' | '30_min' | '1_hour' | '1_day' | '2_days';
 
 export interface CalendarItem extends BaseEntity {
   type: CalendarItemType;
   title: string;
   date: string;           // 'YYYY-MM-DD'
   clientId?: string;
+  leadId?: string;
   startTime?: string;     // 'HH:mm' e.g. '14:30'
   endTime?: string;       // 'HH:mm' e.g. '15:30'
   location?: string;      // Video link or physical venue
   locationOrLink?: string;
   attendees?: string[];   // User IDs or names
   reminder?: MeetingReminder;
+  reminders?: MeetingReminder[];
   notes?: string;
   text?: string;          // For notes
+}
+
+export type LeadStage =
+  | 'New'
+  | 'Contacted'
+  | 'Follow-up'
+  | 'Meeting Fixed'
+  | 'Converted'
+  | 'Not Interested';
+
+export type CallOutcome =
+  | 'Not answered'
+  | 'Busy'
+  | 'Callback requested'
+  | 'Interested'
+  | 'Meeting fixed'
+  | 'Not interested'
+  | 'Wrong number';
+
+export interface Lead extends BaseEntity {
+  businessName: string;
+  contactPerson: string;
+  phone: string;
+  email?: string;
+  source?: string;
+  notes?: string;
+  stage: LeadStage;
+  convertedClientId?: string;
+}
+
+export interface CallLog extends BaseEntity {
+  leadId: string;
+  date: string; // 'YYYY-MM-DD'
+  time: string; // 'HH:mm'
+  calledBy: string; // User name or ID
+  outcome: CallOutcome;
+  notes?: string;
+  followUpDate?: string; // 'YYYY-MM-DD'
+  followUpTime?: string; // 'HH:mm'
+  followUpNote?: string;
+  followUpDone?: boolean;
+  meetingId?: string; // Links to calendar item
+  meetingDate?: string;
+  meetingTime?: string;
+  meetingLocation?: string;
+  reminders?: MeetingReminder[];
 }
 
 export interface Notification extends BaseEntity {
@@ -184,7 +246,9 @@ export interface Notification extends BaseEntity {
     | 'task_assigned'
     | 'system'
     | 'deliverable_added'
-    | 'client_added';
+    | 'client_added'
+    | 'follow_up_due'
+    | 'follow_up_overdue';
   title?: string;
   message: string;
   readAt?: string;
@@ -218,6 +282,8 @@ export interface AgencySettings {
   sidebarCollapsedDefault: boolean;
   dateFormat: string;
   taskDueNotificationTime?: string; // e.g. "09:00"
+  followUpNotificationTime?: string; // e.g. "09:00"
+  initialOpeningBalance?: Money; // Initial cash opening balance
 }
 
 export type Permission =
@@ -237,4 +303,7 @@ export type Permission =
   | 'team.write'
   | 'reports.read'
   | 'settings.read'
-  | 'settings.write';
+  | 'settings.write'
+  | 'calls.read'
+  | 'calls.write';
+

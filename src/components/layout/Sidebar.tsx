@@ -12,6 +12,7 @@ import {
   Calendar,
   Wallet,
   Users,
+  PhoneCall,
   BarChart3,
   Settings,
   ChevronLeft,
@@ -27,6 +28,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   Calendar,
   Wallet,
   Users,
+  PhoneCall,
   BarChart3,
   Settings,
 };

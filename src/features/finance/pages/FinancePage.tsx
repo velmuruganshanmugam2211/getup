@@ -20,8 +20,11 @@ import {
   ModalFooter,
 } from '@/components/ui/Modal';
 import { AddExpenseModal } from '../components/AddExpenseModal';
+import { CashFlowTab } from '../components/CashFlowTab';
+import { RecurringExpensesTab } from '../components/RecurringExpensesTab';
+import { InlineMonthPicker } from '@/components/ui/InlineMonthPicker';
 import { useQuery } from '@tanstack/react-query';
-import { financeService, deliverableService, billingCycleService } from '@/services';
+import { financeService, deliverableService, billingCycleService, settingsService } from '@/services';
 import {
   useClients,
   useCreatePayment,
@@ -59,6 +62,9 @@ import {
   TrendingUp,
   AlertCircle,
   Receipt,
+  Layers,
+  Sparkles,
+  Building2,
   Plus,
   Edit2,
   Trash2,
@@ -96,17 +102,34 @@ export const FinancePage: React.FC = () => {
     queryFn: () => billingCycleService.getCycles(),
   });
 
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => settingsService.getSettings(),
+  });
+
+  // Selected statement month for synchronized metrics across tabs
+  const [selectedMonth, setSelectedMonth] = useState<string>('2026-10');
+  const [expenseNatureFilter, setExpenseNatureFilter] = useState<'all' | 'fixed' | 'variable'>('all');
+
   // Central selectors for agency & client financials
   const agencyMetrics = useMemo(() => {
-    return computeAgencyMetrics(clients, payments, expenses, deliverables, allCycles);
-  }, [clients, payments, expenses, deliverables, allCycles]);
+    return computeAgencyMetrics(
+      clients,
+      payments,
+      expenses,
+      deliverables,
+      selectedMonth,
+      allCycles,
+      settings?.initialOpeningBalance
+    );
+  }, [clients, payments, expenses, deliverables, allCycles, selectedMonth, settings?.initialOpeningBalance]);
 
   const clientSummaries = useMemo(() => {
     return clients.map((c) => ({
       client: c,
-      fin: computeClientFinancials(c, payments, expenses, undefined, allCycles),
+      fin: computeClientFinancials(c, payments, expenses, selectedMonth, allCycles),
     }));
-  }, [clients, payments, expenses, allCycles]);
+  }, [clients, payments, expenses, selectedMonth, allCycles]);
 
   // Payment modal state - opens empty with no pre-selected values
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
@@ -301,9 +324,13 @@ export const FinancePage: React.FC = () => {
       if (expenseClientFilter !== 'all' && e.clientId !== expenseClientFilter) return false;
       if (expenseCategoryFilter !== 'all' && e.category !== expenseCategoryFilter) return false;
       if (expenseMonthFilter !== 'all' && !e.date.startsWith(expenseMonthFilter)) return false;
+      if (expenseNatureFilter !== 'all') {
+        const nature = e.expenseNature || (e.clientId ? 'variable' : 'fixed');
+        if (nature !== expenseNatureFilter) return false;
+      }
       return true;
     });
-  }, [expenses, expenseSearch, expenseTypeFilter, expenseClientFilter, expenseCategoryFilter, expenseMonthFilter]);
+  }, [expenses, expenseSearch, expenseTypeFilter, expenseClientFilter, expenseCategoryFilter, expenseMonthFilter, expenseNatureFilter]);
 
   // Unique Months for filter dropdowns
   const availablePaymentMonths = useMemo(() => {
@@ -545,6 +572,7 @@ export const FinancePage: React.FC = () => {
         subtitle="Live reconciliation of client retainer billing, shoot expenses, operating overhead, and net margin."
         actions={
           <div className="flex items-center gap-2">
+            <InlineMonthPicker value={selectedMonth} onChange={setSelectedMonth} />
             <Can permission="finance.write">
               <Button
                 variant="outline"
@@ -567,35 +595,53 @@ export const FinancePage: React.FC = () => {
         }
       />
 
-      {/* Top KPI Strip (Synchronized from Central Selectors) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Top KPI Strip (Synchronized from Central Selectors across 7 metrics) */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <StatCard
-          title="Total Revenue Received"
+          title="Revenue Received"
           value={formatINR(agencyMetrics.totalReceived)}
           subtitle={`From ${agencyMetrics.activeClients} active clients`}
-          icon={<Wallet className="w-5 h-5 text-semantic-success" />}
+          icon={<Wallet className="w-4 h-4 text-semantic-success" />}
         />
         <StatCard
           title="Pending to Collect"
           value={formatINR(agencyMetrics.totalPending)}
           subtitle={`of ${formatINR(agencyMetrics.totalExpected)} expected`}
-          icon={<AlertCircle className="w-5 h-5 text-semantic-danger" />}
+          icon={<AlertCircle className="w-4 h-4 text-semantic-danger" />}
+        />
+        <StatCard
+          title="Fixed Expenses"
+          value={formatINR(agencyMetrics.fixedExpenses)}
+          subtitle="Salary, rent, regular"
+          icon={<Layers className="w-4 h-4 text-primary-600" />}
+        />
+        <StatCard
+          title="Variable Expenses"
+          value={formatINR(agencyMetrics.variableExpenses)}
+          subtitle="Shoots, petrol, ads"
+          icon={<Receipt className="w-4 h-4 text-amber-600" />}
         />
         <StatCard
           title="Total Expenses"
           value={formatINR(agencyMetrics.totalExpenses)}
-          subtitle={`Client: ${formatINR(agencyMetrics.clientExpenses)} · Agency: ${formatINR(agencyMetrics.agencyExpenses)}`}
-          icon={<Receipt className="w-5 h-5 text-amber-600" />}
+          subtitle={`Fixed + Variable`}
+          icon={<Receipt className="w-4 h-4 text-rose-600" />}
         />
         <StatCard
           title="Net Profit"
           value={formatINR(agencyMetrics.netProfit)}
-          subtitle={`Net margin: ${agencyMetrics.profitMargin}%`}
-          icon={<TrendingUp className="w-5 h-5 text-primary-600" />}
+          subtitle={`Margin: ${agencyMetrics.profitMargin}%`}
+          icon={<TrendingUp className="w-4 h-4 text-emerald-600" />}
+        />
+        <StatCard
+          title="Closing Cash"
+          value={formatINR(agencyMetrics.closingCash)}
+          subtitle="Net cash on hand"
+          icon={<Wallet className="w-4 h-4 text-primary-600" />}
         />
       </div>
 
-      {/* Tabs: Client Payments | Expenses | Client-wise Summary */}
+      {/* Tabs: Client Payments | Expenses | Cash Flow | Fixed Setup | Client-wise Summary | Analytics */}
       <Tabs defaultValue="payments" className="space-y-4">
         <TabsList className="bg-surface border border-border p-1 rounded-card flex flex-wrap gap-1">
           <TabsTrigger value="payments" className="text-xs font-semibold px-4 py-2">
@@ -603,6 +649,12 @@ export const FinancePage: React.FC = () => {
           </TabsTrigger>
           <TabsTrigger value="expenses" className="text-xs font-semibold px-4 py-2">
             Expenses Log ({expenses.length})
+          </TabsTrigger>
+          <TabsTrigger value="cash-flow" className="text-xs font-semibold px-4 py-2">
+            Cash Flow
+          </TabsTrigger>
+          <TabsTrigger value="recurring" className="text-xs font-semibold px-4 py-2">
+            Fixed Expenses Setup
           </TabsTrigger>
           <TabsTrigger value="client-summary" className="text-xs font-semibold px-4 py-2">
             Client-wise Summary ({clients.length})
@@ -614,6 +666,98 @@ export const FinancePage: React.FC = () => {
 
         {/* TAB 1: CLIENT PAYMENTS */}
         <TabsContent value="payments" className="space-y-4">
+          {/* Client-Wise Financial & Retainer Position Summary */}
+          <Card className="p-4 border-border space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-bold text-text uppercase tracking-wider flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5 text-primary-600" />
+                  Client-Wise Retainers & Collections Summary
+                </h4>
+                <p className="text-[11px] text-text-muted mt-0.5">
+                  Expected fee, received payments, pending balances, and client-level margin for the active billing cycle. Click a client to filter their payment records.
+                </p>
+              </div>
+              {paymentClientFilter !== 'all' && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPaymentClientFilter('all')}
+                  className="text-xs h-7"
+                >
+                  Show All Clients
+                </Button>
+              )}
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-surface-subtle border-b border-border text-[11px] font-bold text-text-muted uppercase tracking-wider">
+                    <th className="py-2.5 px-3">Client</th>
+                    <th className="py-2.5 px-3">Active Cycle</th>
+                    <th className="py-2.5 px-3 text-right">Expected (₹)</th>
+                    <th className="py-2.5 px-3 text-right">Received (₹)</th>
+                    <th className="py-2.5 px-3 text-right">Pending (₹)</th>
+                    <th className="py-2.5 px-3 text-right">Client Expenses (₹)</th>
+                    <th className="py-2.5 px-3 text-right">Profit (₹)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {clientSummaries.map(({ client, fin }) => {
+                    const clientCycles = allCycles.filter((cy) => cy.clientId === client.id);
+                    const activeCycle = clientCycles.find(
+                      (cy) =>
+                        cy.startDate.slice(0, 7) === selectedMonth ||
+                        (selectedMonth >= cy.startDate.slice(0, 7) && selectedMonth <= cy.endDate.slice(0, 7))
+                    ) || clientCycles[0];
+
+                    const isSelected = paymentClientFilter === client.id;
+
+                    return (
+                      <tr
+                        key={client.id}
+                        onClick={() =>
+                          setPaymentClientFilter(isSelected ? 'all' : client.id)
+                        }
+                        className={`hover:bg-surface-subtle transition-colors cursor-pointer ${
+                          isSelected ? 'bg-primary-50/70 font-semibold' : ''
+                        }`}
+                      >
+                        <td className="py-2.5 px-3">
+                          <span className="font-bold text-text">{client.name}</span>
+                          <span className="text-[10px] text-text-muted block">{client.business}</span>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-[11px] text-text-muted">
+                          {activeCycle ? `Cycle #${activeCycle.cycleNumber}` : 'Standard'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-medium text-text">
+                          {formatINR(fin.expected)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-700">
+                          {formatINR(fin.received)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-bold">
+                          <span className={fin.pending > 0 ? 'text-rose-600' : 'text-text-muted'}>
+                            {formatINR(fin.pending)}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-amber-700">
+                          {formatINR(fin.clientExpenses)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-bold">
+                          <span className={fin.profit >= 0 ? 'text-primary-700' : 'text-rose-600'}>
+                            {formatINR(fin.profit)}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
           {/* Slim Filter Toolbar */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-surface p-2.5 rounded-card border border-border">
             <div className="flex items-center gap-2 flex-1 max-w-sm">
@@ -860,6 +1004,90 @@ export const FinancePage: React.FC = () => {
 
         {/* TAB 2: EXPENSES */}
         <TabsContent value="expenses" className="space-y-4">
+          {/* Expenses Breakdown KPI Strip */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-3.5 rounded-card bg-surface border border-border">
+              <span className="text-[11px] font-bold text-text-muted uppercase tracking-wider block">
+                Fixed Expenses (Salaries, Rent, Subs)
+              </span>
+              <span className="text-xl font-bold text-text mt-1 block">
+                {formatINR(agencyMetrics.fixedExpenses)}
+              </span>
+              <span className="text-[10px] text-text-muted mt-0.5 block">
+                Regular recurring commitments
+              </span>
+            </div>
+
+            <div className="p-3.5 rounded-card bg-surface border border-border">
+              <span className="text-[11px] font-bold text-text-muted uppercase tracking-wider block">
+                Variable Expenses (Shoots, Travel, Ads)
+              </span>
+              <span className="text-xl font-bold text-text mt-1 block">
+                {formatINR(agencyMetrics.variableExpenses)}
+              </span>
+              <span className="text-[10px] text-text-muted mt-0.5 block">
+                Shoot-level and ad-hoc production spend
+              </span>
+            </div>
+
+            <div className="p-3.5 rounded-card bg-rose-50/50 border border-rose-200">
+              <span className="text-[11px] font-bold text-rose-800 uppercase tracking-wider block">
+                Total Operating Expenses
+              </span>
+              <span className="text-xl font-bold text-rose-700 mt-1 block">
+                {formatINR(agencyMetrics.totalExpenses)}
+              </span>
+              <span className="text-[10px] text-rose-600 mt-0.5 block">
+                Fixed ({formatINR(agencyMetrics.fixedExpenses)}) + Variable ({formatINR(agencyMetrics.variableExpenses)})
+              </span>
+            </div>
+          </div>
+
+          {/* Month-End Split View Card & Nature Segmented Control */}
+          <div className="p-3.5 rounded-control bg-primary-50/70 border border-primary-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-primary-600 shrink-0" />
+              <span className="text-primary-950 font-medium">
+                <strong>Month-end Split View:</strong> Total expenses (<strong>{formatINR(agencyMetrics.totalExpenses)}</strong>) minus Fixed overheads (<strong>{formatINR(agencyMetrics.fixedExpenses)}</strong>) = <strong>{formatINR(agencyMetrics.variableExpenses)}</strong> Variable spent.
+              </span>
+            </div>
+            <div className="inline-flex rounded-control border border-border bg-surface p-0.5 text-xs shrink-0">
+              <button
+                type="button"
+                onClick={() => setExpenseNatureFilter('all')}
+                className={`px-3 py-1 rounded-control font-semibold transition-all ${
+                  expenseNatureFilter === 'all'
+                    ? 'bg-primary-600 text-white shadow-sm'
+                    : 'text-text-muted hover:text-text'
+                }`}
+              >
+                All ({expenses.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpenseNatureFilter('fixed')}
+                className={`px-3 py-1 rounded-control font-semibold transition-all ${
+                  expenseNatureFilter === 'fixed'
+                    ? 'bg-primary-600 text-white shadow-sm'
+                    : 'text-text-muted hover:text-text'
+                }`}
+              >
+                Fixed
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpenseNatureFilter('variable')}
+                className={`px-3 py-1 rounded-control font-semibold transition-all ${
+                  expenseNatureFilter === 'variable'
+                    ? 'bg-primary-600 text-white shadow-sm'
+                    : 'text-text-muted hover:text-text'
+                }`}
+              >
+                Variable
+              </button>
+            </div>
+          </div>
+
           {/* Slim Filter Toolbar for Expenses */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-surface p-2.5 rounded-card border border-border">
             <div className="flex items-center gap-2 flex-1 max-w-sm">
@@ -1031,6 +1259,7 @@ export const FinancePage: React.FC = () => {
                     <th className="py-3 px-4">Date</th>
                     <th className="py-3 px-4">Item Note & Shoot Group</th>
                     <th className="py-3 px-4">Category</th>
+                    <th className="py-3 px-4">Nature</th>
                     <th className="py-3 px-4">Type</th>
                     <th className="py-3 px-4">Client</th>
                     <th className="py-3 px-4">Amount</th>
@@ -1040,7 +1269,7 @@ export const FinancePage: React.FC = () => {
                 <tbody className="divide-y divide-border">
                   {filteredExpenses.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-12 text-center text-text-muted text-xs">
+                      <td colSpan={8} className="py-12 text-center text-text-muted text-xs">
                         <Receipt className="w-8 h-8 mx-auto mb-2 text-text-subtle" />
                         No expenses logged matching the current filters.
                         <div className="mt-3">
@@ -1053,6 +1282,7 @@ export const FinancePage: React.FC = () => {
                   ) : (
                     filteredExpenses.map((exp) => {
                       const isClientExp = exp.type === 'client' || !!exp.clientId;
+                      const nature = exp.expenseNature || (isClientExp ? 'variable' : 'fixed');
                       return (
                         <tr key={exp.id} className="hover:bg-surface-subtle/50 transition-colors">
                           <td className="py-3 px-4 tabular-nums text-text-muted">
@@ -1070,6 +1300,14 @@ export const FinancePage: React.FC = () => {
                             <span className="capitalize px-2 py-0.5 rounded bg-surface-subtle border border-border text-[11px] font-medium">
                               {exp.category}
                             </span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <Badge
+                              variant={nature === 'fixed' ? 'slate' : 'warning'}
+                              className="text-[10px] uppercase font-bold"
+                            >
+                              {nature}
+                            </Badge>
                           </td>
                           <td className="py-3 px-4">
                             <Badge
@@ -1124,7 +1362,27 @@ export const FinancePage: React.FC = () => {
           </Card>
         </TabsContent>
 
-        {/* TAB 3: CLIENT-WISE SUMMARY */}
+        {/* TAB 3: CASH FLOW */}
+        <TabsContent value="cash-flow" className="space-y-4">
+          <CashFlowTab
+            payments={payments}
+            expenses={expenses}
+            clients={clients}
+            settings={settings}
+            selectedMonth={selectedMonth}
+            onMonthChange={setSelectedMonth}
+          />
+        </TabsContent>
+
+        {/* TAB 4: FIXED EXPENSES SETUP */}
+        <TabsContent value="recurring" className="space-y-4">
+          <RecurringExpensesTab
+            selectedMonth={selectedMonth}
+            expenses={expenses}
+          />
+        </TabsContent>
+
+        {/* TAB 5: CLIENT-WISE SUMMARY */}
         <TabsContent value="client-summary" className="space-y-4">
           <div className="flex items-center justify-between gap-2.5 bg-surface p-2.5 rounded-card border border-border">
             <span className="text-xs font-semibold text-text-muted">

@@ -10,6 +10,7 @@ import {
   mockNotificationService,
   mockActivityLogService,
   mockSettingsService,
+  mockCallService,
 } from './mock';
 import {
   IAuthService,
@@ -23,6 +24,7 @@ import {
   INotificationService,
   IActivityLogService,
   ISettingsService,
+  ICallService,
 } from './types';
 
 export const authService: IAuthService = mockAuthService;
@@ -36,6 +38,7 @@ export const teamService: ITeamService = mockTeamService;
 export const notificationService: INotificationService = mockNotificationService;
 export const activityLogService: IActivityLogService = mockActivityLogService;
 export const settingsService: ISettingsService = mockSettingsService;
+export const callService: ICallService = mockCallService;
 
 export * from './types';
 export { mockStore } from './mock/mockStore';

@@ -14,7 +14,7 @@ import { FormField } from '@/components/forms/FormField';
 import { MoneyInput } from '@/components/forms/MoneyInput';
 import { useCreateExpense, useCreateExpensesBatch, useUpdateExpense, useClients } from '@/features/clients/hooks/useClients';
 import { useToast } from '@/components/feedback/Toast';
-import { Expense, ExpenseCategory, ExpenseType } from '@/types';
+import { Expense, ExpenseCategory, ExpenseType, ExpenseNature } from '@/types';
 import { formatINR } from '@/lib/format';
 import { Plus, Trash2, Receipt, Layers } from 'lucide-react';
 
@@ -65,6 +65,9 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   const [expenseType, setExpenseType] = useState<ExpenseType | ''>(
     prefilledClientId ? 'client' : ''
   );
+  const [expenseNature, setExpenseNature] = useState<ExpenseNature | ''>(
+    prefilledClientId ? 'variable' : ''
+  );
   const [clientId, setClientId] = useState<string>(prefilledClientId || '');
   const [projectLabel, setProjectLabel] = useState<string>('');
 
@@ -79,7 +82,9 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
 
     if (editingExpense) {
       setDate(editingExpense.date || '');
-      setExpenseType(editingExpense.type || (editingExpense.clientId ? 'client' : 'agency'));
+      const eType = editingExpense.type || (editingExpense.clientId ? 'client' : 'agency');
+      setExpenseType(eType);
+      setExpenseNature(editingExpense.expenseNature || (eType === 'client' ? 'variable' : 'fixed'));
       setClientId(editingExpense.clientId || '');
       setProjectLabel(editingExpense.projectLabel || '');
       setItems([
@@ -93,6 +98,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
     } else {
       setDate('');
       setExpenseType(prefilledClientId ? 'client' : '');
+      setExpenseNature(prefilledClientId ? 'variable' : '');
       setClientId(prefilledClientId || '');
       setProjectLabel('');
       setItems([{ id: '1', category: '' as any, amount: '' as any, note: '' }]);
@@ -127,6 +133,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
     if (!date) errs.date = 'Expense date is required';
     if (!expenseType) errs.expenseType = 'Please choose expense type';
     if (expenseType === 'client' && !clientId) errs.clientId = 'Please select a client';
+    if (expenseType === 'agency' && !expenseNature) errs.expenseNature = 'Please specify Fixed or Variable nature';
 
     const hasInvalid = items.some(
       (item) => !item.category || !item.amount || Number(item.amount) <= 0 || !item.note.trim()
@@ -143,6 +150,8 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
 
     try {
       const finalType = expenseType as import('@/types').ExpenseType;
+      const finalNature = (expenseType === 'client' ? 'variable' : expenseNature) as ExpenseNature;
+
       if (editingExpense) {
         // Edit single expense
         const single = items[0];
@@ -151,6 +160,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
           data: {
             date,
             type: finalType,
+            expenseNature: finalNature,
             clientId: finalType === 'client' ? clientId : undefined,
             projectLabel: projectLabel.trim() || undefined,
             category: single.category,
@@ -165,6 +175,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
         await createExpenseMutation.mutateAsync({
           date,
           type: finalType,
+          expenseNature: finalNature,
           clientId: finalType === 'client' ? clientId : undefined,
           projectLabel: projectLabel.trim() || undefined,
           category: single.category,
@@ -177,6 +188,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
         const batchData = items.map((item) => ({
           date,
           type: finalType,
+          expenseNature: finalNature,
           clientId: finalType === 'client' ? clientId : undefined,
           projectLabel: projectLabel.trim() || undefined,
           category: item.category,
@@ -212,32 +224,33 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
               {editingExpense ? 'Edit Expense Record' : 'Record Agency / Client Expense'}
             </ModalTitle>
             <ModalDescription className="text-xs text-text-muted">
-              Add client shoot costs (petrol, camera rental, ads) or general agency operating expenses.
+              Add client shoot costs (petrol, camera rental, ads) or general agency operating expenses (Fixed or Variable).
             </ModalDescription>
           </ModalHeader>
 
           <div className="space-y-4 py-4 flex-1 overflow-y-auto pr-1">
-            {/* Top row: Expense Type & Date */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Top row: Expense Type, Nature & Date */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label className="text-xs font-bold text-text block mb-1.5">
                   Expense Type <span className="text-rose-500">*</span>
                 </label>
-                <div className="grid grid-cols-2 gap-2 bg-surface-subtle p-1 rounded-control border border-border">
+                <div className="grid grid-cols-2 gap-1.5 bg-surface-subtle p-1 rounded-control border border-border">
                   <button
                     type="button"
                     onClick={() => {
                       setExpenseType('client');
-                      if (formErrors.expenseType) setFormErrors((prev) => ({ ...prev, expenseType: '' }));
+                      setExpenseNature('variable');
+                      if (formErrors.expenseType) setFormErrors((prev) => ({ ...prev, expenseType: '', expenseNature: '' }));
                     }}
                     disabled={lockClient}
-                    className={`py-1.5 px-3 text-xs font-bold rounded transition-colors ${
+                    className={`py-1 px-2 text-xs font-bold rounded transition-colors ${
                       expenseType === 'client'
                         ? 'bg-primary-600 text-white shadow-sm'
                         : 'text-text-muted hover:text-text'
                     }`}
                   >
-                    Client Expense
+                    Client
                   </button>
                   <button
                     type="button"
@@ -246,25 +259,63 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                       if (formErrors.expenseType) setFormErrors((prev) => ({ ...prev, expenseType: '' }));
                     }}
                     disabled={lockClient}
-                    className={`py-1.5 px-3 text-xs font-bold rounded transition-colors ${
+                    className={`py-1 px-2 text-xs font-bold rounded transition-colors ${
                       expenseType === 'agency'
                         ? 'bg-primary-600 text-white shadow-sm'
                         : 'text-text-muted hover:text-text'
                     }`}
                   >
-                    Agency (General)
+                    Agency
                   </button>
                 </div>
                 {formErrors.expenseType && (
                   <p className="text-[10px] text-rose-500 font-medium mt-1">{formErrors.expenseType}</p>
                 )}
-                <span className="text-[10px] text-text-muted mt-1 block">
-                  {expenseType === 'client'
-                    ? 'Tied to a specific client, deducts from client profit'
-                    : expenseType === 'agency'
-                    ? 'Agency overhead: salaries, studio rent, general software'
-                    : 'Choose whether this expense is for a client or general agency overhead'}
-                </span>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-text block mb-1.5">
+                  Expense Nature <span className="text-rose-500">*</span>
+                </label>
+                {expenseType === 'client' ? (
+                  <div className="py-2 px-2.5 bg-surface-subtle border border-border rounded-control text-xs text-text-muted">
+                    <span className="font-bold text-text">Variable</span> (Always for client)
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-1.5 bg-surface-subtle p-1 rounded-control border border-border">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExpenseNature('fixed');
+                        if (formErrors.expenseNature) setFormErrors((prev) => ({ ...prev, expenseNature: '' }));
+                      }}
+                      className={`py-1 px-2 text-xs font-bold rounded transition-colors ${
+                        expenseNature === 'fixed'
+                          ? 'bg-indigo-600 text-white shadow-sm'
+                          : 'text-text-muted hover:text-text'
+                      }`}
+                    >
+                      Fixed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExpenseNature('variable');
+                        if (formErrors.expenseNature) setFormErrors((prev) => ({ ...prev, expenseNature: '' }));
+                      }}
+                      className={`py-1 px-2 text-xs font-bold rounded transition-colors ${
+                        expenseNature === 'variable'
+                          ? 'bg-amber-600 text-white shadow-sm'
+                          : 'text-text-muted hover:text-text'
+                      }`}
+                    >
+                      Variable
+                    </button>
+                  </div>
+                )}
+                {formErrors.expenseNature && (
+                  <p className="text-[10px] text-rose-500 font-medium mt-1">{formErrors.expenseNature}</p>
+                )}
               </div>
 
               <FormField label="Expense Date" required error={formErrors.date}>

@@ -10,6 +10,7 @@ export const ROUTES = {
   TASKS: '/tasks',
   CALENDAR: '/calendar',
   TEAM: '/team',
+  CALLS: '/calls',
   REPORTS: '/reports',
   SETTINGS: '/settings',
 } as const;

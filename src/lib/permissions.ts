@@ -19,6 +19,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'reports.read',
     'settings.read',
     'settings.write',
+    'calls.read',
+    'calls.write',
   ],
   worker: [
     'tasks.read',

@@ -10,6 +10,7 @@ import {
   INotificationService,
   IActivityLogService,
   ISettingsService,
+  ICallService,
   MonthlyFinancialSummary,
 } from '../types';
 import { mockStore } from './mockStore';
@@ -28,6 +29,9 @@ import {
   BillingCycle,
   BillingCyclePackage,
   DeliverableType,
+  RecurringFixedExpense,
+  Lead,
+  CallLog,
 } from '@/types';
 import bcrypt from 'bcryptjs';
 import { computeAgencyMetrics } from '@/lib/selectors';
@@ -508,6 +512,110 @@ export const mockFinanceService: IFinanceService = {
       profit: metrics.netProfit,
       expensesByCategory,
     };
+  },
+
+  async getRecurringFixedExpenses(): Promise<RecurringFixedExpense[]> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') return [];
+    return [...mockStore.recurringFixedExpenses];
+  },
+
+  async createRecurringFixedExpense(data): Promise<RecurringFixedExpense> {
+    await delay();
+    const newRecurring: RecurringFixedExpense = {
+      ...data,
+      id: `rec-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: mockStore.currentUser.id,
+    };
+    mockStore.recurringFixedExpenses.unshift(newRecurring);
+    mockStore.saveAll();
+    return newRecurring;
+  },
+
+  async updateRecurringFixedExpense(id: string, data): Promise<RecurringFixedExpense> {
+    await delay();
+    const idx = mockStore.recurringFixedExpenses.findIndex((r) => r.id === id);
+    if (idx === -1) throw new Error('Recurring fixed expense not found');
+    const updated = {
+      ...mockStore.recurringFixedExpenses[idx],
+      ...data,
+      updatedAt: new Date().toISOString(),
+    };
+    mockStore.recurringFixedExpenses[idx] = updated;
+    mockStore.saveAll();
+    return updated;
+  },
+
+  async deleteRecurringFixedExpense(id: string): Promise<void> {
+    await delay();
+    mockStore.recurringFixedExpenses = mockStore.recurringFixedExpenses.filter((r) => r.id !== id);
+    mockStore.saveAll();
+  },
+
+  async markRecurringExpensePaid(recurringId: string, month: string): Promise<Expense> {
+    await delay();
+    const recurring = mockStore.recurringFixedExpenses.find((r) => r.id === recurringId);
+    if (!recurring) throw new Error('Recurring expense not found');
+
+    const newExpense: Expense = {
+      id: `exp-fix-${Date.now()}`,
+      type: 'agency',
+      expenseNature: 'fixed',
+      category: recurring.category,
+      amount: recurring.amount,
+      date: `${month}-01`,
+      note: `${recurring.name} (${month})`,
+      recurring: true,
+      userId: recurring.teamMemberId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: mockStore.currentUser.id,
+    };
+
+    mockStore.expenses.unshift(newExpense);
+    mockStore.saveAll();
+    return newExpense;
+  },
+
+  async processAutoAddFixedExpenses(month: string): Promise<Expense[]> {
+    await delay();
+    const created: Expense[] = [];
+    const activeAutoAdds = mockStore.recurringFixedExpenses.filter((r) => r.active && r.autoAdd);
+
+    for (const r of activeAutoAdds) {
+      // Check if already paid for this month
+      const alreadyExists = mockStore.expenses.some(
+        (e) =>
+          e.expenseNature === 'fixed' &&
+          e.date.startsWith(month) &&
+          (e.note.includes(r.name) || e.amount === r.amount && e.category === r.category)
+      );
+      if (!alreadyExists) {
+        const newExpense: Expense = {
+          id: `exp-auto-${Date.now()}-${r.id}`,
+          type: 'agency',
+          expenseNature: 'fixed',
+          category: r.category,
+          amount: r.amount,
+          date: `${month}-01`,
+          note: `${r.name} (${month}) [Auto-added]`,
+          recurring: true,
+          userId: r.teamMemberId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          createdBy: mockStore.currentUser.id,
+        };
+        mockStore.expenses.unshift(newExpense);
+        created.push(newExpense);
+      }
+    }
+
+    if (created.length > 0) {
+      mockStore.saveAll();
+    }
+    return created;
   },
 };
 
@@ -1349,4 +1457,289 @@ export const mockBillingCycleService: IBillingCycleService = {
     return newCycle;
   },
 };
+
+function updateLeadStage(leadId: string): void {
+  const lead = mockStore.leads.find((l) => l.id === leadId);
+  if (!lead) return;
+  if (lead.convertedClientId) {
+    lead.stage = 'Converted';
+    return;
+  }
+  const calls = mockStore.callLogs
+    .filter((c) => c.leadId === leadId)
+    .sort((a, b) => {
+      const dtA = `${a.date}T${a.time || '00:00'}`;
+      const dtB = `${b.date}T${b.time || '00:00'}`;
+      return dtB.localeCompare(dtA);
+    });
+
+  if (calls.length === 0) {
+    lead.stage = 'New';
+    return;
+  }
+
+  const latest = calls[0];
+  switch (latest.outcome) {
+    case 'Meeting fixed':
+      lead.stage = 'Meeting Fixed';
+      break;
+    case 'Interested':
+    case 'Callback requested':
+      lead.stage = 'Follow-up';
+      break;
+    case 'Not interested':
+    case 'Wrong number':
+      lead.stage = 'Not Interested';
+      break;
+    case 'Busy':
+    case 'Not answered':
+    default:
+      lead.stage = 'Contacted';
+      break;
+  }
+}
+
+export const mockCallService: ICallService = {
+  async getLeads(filters): Promise<Lead[]> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') return [];
+    let result = [...mockStore.leads];
+
+    if (filters?.search) {
+      const q = filters.search.toLowerCase();
+      result = result.filter(
+        (l) =>
+          l.businessName.toLowerCase().includes(q) ||
+          l.contactPerson.toLowerCase().includes(q) ||
+          l.phone.includes(q) ||
+          (l.email && l.email.toLowerCase().includes(q))
+      );
+    }
+
+    if (filters?.stage) {
+      result = result.filter((l) => l.stage === filters.stage);
+    }
+
+    return result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  },
+
+  async getLeadById(id: string): Promise<Lead | null> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') return null;
+    return mockStore.leads.find((l) => l.id === id) || null;
+  },
+
+  async createLead(data): Promise<Lead> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') {
+      throw new Error('Unauthorized');
+    }
+    const newLead: Lead = {
+      ...data,
+      id: `lead-${Date.now()}`,
+      stage: data.stage || 'New',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: mockStore.currentUser.id,
+    };
+    mockStore.leads.unshift(newLead);
+    mockStore.saveAll();
+    return newLead;
+  },
+
+  async updateLead(id: string, data): Promise<Lead> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') {
+      throw new Error('Unauthorized');
+    }
+    const idx = mockStore.leads.findIndex((l) => l.id === id);
+    if (idx === -1) throw new Error('Lead not found');
+
+    const updated: Lead = {
+      ...mockStore.leads[idx],
+      ...data,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (data.convertedClientId) {
+      updated.stage = 'Converted';
+    }
+
+    mockStore.leads[idx] = updated;
+    mockStore.saveAll();
+    return updated;
+  },
+
+  async deleteLead(id: string): Promise<void> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') {
+      throw new Error('Unauthorized');
+    }
+    mockStore.leads = mockStore.leads.filter((l) => l.id !== id);
+    // Also remove associated call logs and meetings
+    const associatedCallLogs = mockStore.callLogs.filter((c) => c.leadId === id);
+    const meetingIds = associatedCallLogs.map((c) => c.meetingId).filter(Boolean);
+    mockStore.callLogs = mockStore.callLogs.filter((c) => c.leadId !== id);
+    if (meetingIds.length > 0) {
+      mockStore.calendarItems = mockStore.calendarItems.filter(
+        (m) => !meetingIds.includes(m.id) && m.leadId !== id
+      );
+    }
+    mockStore.saveAll();
+  },
+
+  async getCallLogs(filters): Promise<CallLog[]> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') return [];
+    let result = [...mockStore.callLogs];
+
+    if (filters?.leadId) {
+      result = result.filter((c) => c.leadId === filters.leadId);
+    }
+    if (filters?.date) {
+      result = result.filter((c) => c.date === filters.date);
+    }
+    if (filters?.calledBy) {
+      result = result.filter((c) => c.calledBy === filters.calledBy);
+    }
+    if (filters?.outcome) {
+      result = result.filter((c) => c.outcome === filters.outcome);
+    }
+
+    return result.sort((a, b) => {
+      const dtA = `${a.date}T${a.time || '00:00'}`;
+      const dtB = `${b.date}T${b.time || '00:00'}`;
+      return dtB.localeCompare(dtA);
+    });
+  },
+
+  async createCallLog(data): Promise<CallLog> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') {
+      throw new Error('Unauthorized');
+    }
+
+    let meetingId = data.meetingId;
+
+    // A meeting fixed from a call creates a Meeting in the existing Calendar store
+    // (title, lead name, date, time, location/link, reminder) so Calendar, Dashboard and bell show it.
+    if (data.outcome === 'Meeting fixed' && !meetingId) {
+      const lead = mockStore.leads.find((l) => l.id === data.leadId);
+      const meetingDate = data.followUpDate || data.date;
+      const meetingTime = data.followUpTime || '11:00';
+
+      const newMeeting: CalendarItem = {
+        id: `mtg-lead-${Date.now()}`,
+        type: 'meeting',
+        title: `Meeting with ${lead?.businessName || 'Lead'} (${lead?.contactPerson || 'Prospect'})`,
+        date: meetingDate,
+        startTime: meetingTime,
+        locationOrLink: data.followUpNote || '',
+        reminder: '10_min',
+        reminders: ['2_days', '1_day', '10_min'],
+        notes: data.notes || '',
+        leadId: data.leadId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: mockStore.currentUser.id,
+      };
+
+      mockStore.calendarItems.unshift(newMeeting);
+      meetingId = newMeeting.id;
+    }
+
+    const newLog: CallLog = {
+      ...data,
+      meetingId,
+      id: `call-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      createdBy: mockStore.currentUser.id,
+    };
+
+    mockStore.callLogs.unshift(newLog);
+    updateLeadStage(data.leadId);
+    mockStore.saveAll();
+    return newLog;
+  },
+
+  async updateCallLog(id: string, data): Promise<CallLog> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') {
+      throw new Error('Unauthorized');
+    }
+    const idx = mockStore.callLogs.findIndex((c) => c.id === id);
+    if (idx === -1) throw new Error('Call log not found');
+
+    const updated: CallLog = {
+      ...mockStore.callLogs[idx],
+      ...data,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // If meeting was updated or newly fixed
+    if (data.outcome === 'Meeting fixed' && !updated.meetingId) {
+      const lead = mockStore.leads.find((l) => l.id === updated.leadId);
+      const meetingDate = updated.followUpDate || updated.date;
+      const meetingTime = updated.followUpTime || '11:00';
+
+      const newMeeting: CalendarItem = {
+        id: `mtg-lead-${Date.now()}`,
+        type: 'meeting',
+        title: `Meeting with ${lead?.businessName || 'Lead'} (${lead?.contactPerson || 'Prospect'})`,
+        date: meetingDate,
+        startTime: meetingTime,
+        locationOrLink: updated.followUpNote || '',
+        reminder: '10_min',
+        reminders: ['2_days', '1_day', '10_min'],
+        notes: updated.notes || '',
+        leadId: updated.leadId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: mockStore.currentUser.id,
+      };
+
+      mockStore.calendarItems.unshift(newMeeting);
+      updated.meetingId = newMeeting.id;
+    }
+
+    mockStore.callLogs[idx] = updated;
+    updateLeadStage(updated.leadId);
+    mockStore.saveAll();
+    return updated;
+  },
+
+  async deleteCallLog(id: string): Promise<void> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') {
+      throw new Error('Unauthorized');
+    }
+    const log = mockStore.callLogs.find((c) => c.id === id);
+    if (!log) return;
+
+    if (log.meetingId) {
+      mockStore.calendarItems = mockStore.calendarItems.filter((m) => m.id !== log.meetingId);
+    }
+
+    mockStore.callLogs = mockStore.callLogs.filter((c) => c.id !== id);
+    updateLeadStage(log.leadId);
+    mockStore.saveAll();
+  },
+
+  async markFollowUpDone(id: string): Promise<CallLog> {
+    await delay();
+    if (mockStore.currentUser.role === 'worker') {
+      throw new Error('Unauthorized');
+    }
+    const idx = mockStore.callLogs.findIndex((c) => c.id === id);
+    if (idx === -1) throw new Error('Call log not found');
+
+    mockStore.callLogs[idx].followUpDone = true;
+    mockStore.callLogs[idx].updatedAt = new Date().toISOString();
+    updateLeadStage(mockStore.callLogs[idx].leadId);
+    mockStore.saveAll();
+    return mockStore.callLogs[idx];
+  },
+};
+
 

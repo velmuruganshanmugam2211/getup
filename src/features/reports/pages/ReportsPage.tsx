@@ -15,10 +15,12 @@ import {
   activityLogService,
   authService,
   billingCycleService,
+  callService,
 } from '@/services';
 import {
   computeAgencyMetrics,
   computeAllClientsMetrics,
+  computeCallStats,
 } from '@/lib/selectors';
 import { formatCycleDateRange } from '@/lib/cycleUtils';
 import { formatINR, formatDate, formatPercent } from '@/lib/format';
@@ -39,6 +41,7 @@ import {
   CheckSquare,
   Printer,
   ExternalLink,
+  PhoneCall,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -74,7 +77,8 @@ type ReportTab =
   | 'team'
   | 'tasks'
   | 'meetings'
-  | 'statement';
+  | 'statement'
+  | 'calls';
 
 type PeriodRange = 'this_month' | 'last_month' | 'quarter' | 'fy' | 'custom';
 
@@ -112,6 +116,8 @@ export const ReportsPage: React.FC = () => {
   const { data: calendarItems = [] } = useQuery({ queryKey: ['calendar'], queryFn: () => calendarService.getItems() });
   const { data: activityLogs = [] } = useQuery({ queryKey: ['activity'], queryFn: () => activityLogService.getActivityLogs(50) });
   const { data: currentUser } = useQuery({ queryKey: ['auth', 'currentUser'], queryFn: () => authService.getCurrentUser() });
+  const { data: callLogs = [] } = useQuery({ queryKey: ['callLogs'], queryFn: () => callService.getCallLogs() });
+  const { data: leads = [] } = useQuery({ queryKey: ['leads'], queryFn: () => callService.getLeads() });
 
   // Period Range Calculation
   const periodDetails = useMemo(() => {
@@ -276,6 +282,16 @@ export const ReportsPage: React.FC = () => {
     return { items, passedCount, totalCount: items.length };
   }, [filteredData, tasks]);
 
+  // Calls and Leads statistics for period
+  const callStats = useMemo(() => {
+    const { startMonth, endMonth } = periodDetails;
+    const filteredCalls = callLogs.filter((c) => {
+      const m = c.date.substring(0, 7);
+      return m >= startMonth && m <= endMonth;
+    });
+    return computeCallStats(filteredCalls, leads);
+  }, [callLogs, leads, periodDetails]);
+
   // Tab definitions
   const tabs: { id: ReportTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Overview', icon: <TrendingUp className="w-3.5 h-3.5" /> },
@@ -287,6 +303,7 @@ export const ReportsPage: React.FC = () => {
     { id: 'tasks', label: 'Tasks Report', icon: <CheckSquare className="w-3.5 h-3.5" /> },
     { id: 'meetings', label: 'Meetings & Activity', icon: <Calendar className="w-3.5 h-3.5" /> },
     { id: 'statement', label: 'Client Statement', icon: <Printer className="w-3.5 h-3.5" /> },
+    { id: 'calls', label: 'Calls & Leads', icon: <PhoneCall className="w-3.5 h-3.5" /> },
   ];
 
   // -------------------------------------------------------------
@@ -499,6 +516,31 @@ export const ReportsPage: React.FC = () => {
           pmtRows.push(['TOTAL RECEIVED', '—', '—', formatINR(clientMetric.financials.received)]);
           startY = addTable(doc, startY + 4, pmtCols, pmtRows, { hasTotalsRow: true });
         }
+      } else if (activeTab === 'calls') {
+        const kpis = [
+          { label: 'Total Calls', value: String(callStats.totalCalls) },
+          { label: 'Connection Rate', value: `${callStats.connectionRate}%`, isPositive: callStats.connectionRate >= 50 },
+          { label: 'Meetings Fixed', value: String(callStats.meetingsFixed), isPositive: callStats.meetingsFixed > 0 },
+          { label: 'Conversion %', value: `${callStats.conversionRate}%`, isPositive: callStats.conversionRate > 0 },
+          { label: 'Pending Follow-ups', value: String(callStats.followUpsPending), isNegative: callStats.followUpsPending > 0 },
+        ];
+        startY = addKpiRow(doc, startY, kpis);
+
+        const callerCols = [
+          { header: 'Caller / Team Member', dataKey: 'caller' },
+          { header: 'Calls Made', dataKey: 'total', align: 'center' as const },
+          { header: 'Answered / Connected', dataKey: 'connected', align: 'center' as const },
+          { header: 'Meetings Fixed', dataKey: 'meetings', align: 'center' as const },
+          { header: 'Follow-ups Set', dataKey: 'followUps', align: 'center' as const },
+        ];
+        const callerRows = callStats.perCallerStats.map((c) => [
+          c.caller,
+          c.callsCount,
+          c.connectedCount,
+          c.meetingsCount,
+          c.followUpsCount,
+        ]);
+        startY = addTable(doc, startY + 4, callerCols, callerRows);
       }
 
       savePdf(doc, `GetupAgency_${activeTab.toUpperCase()}_${periodDetails.label.replace(/\s+/g, '-')}.pdf`);
@@ -577,6 +619,16 @@ export const ReportsPage: React.FC = () => {
         return [u.name, u.role, completed, overdue, dels];
       });
       exportToCsv(`GetupAgency_Team_${cleanPeriod}.csv`, headers, rows);
+    } else if (activeTab === 'calls') {
+      const headers = ['Caller', 'Calls Made', 'Connected', 'Meetings Fixed', 'Follow-ups'];
+      const rows = callStats.perCallerStats.map((c) => [
+        c.caller,
+        c.callsCount,
+        c.connectedCount,
+        c.meetingsCount,
+        c.followUpsCount,
+      ]);
+      exportToCsv(`GetupAgency_Calls_${cleanPeriod}.csv`, headers, rows);
     } else {
       toast.info('Export CSV', 'Exporting current report view data.');
       const headers = ['Metric', 'Value'];
@@ -1893,6 +1945,128 @@ export const ReportsPage: React.FC = () => {
               </Card>
             );
           })()}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB 10: CALLS AND LEADS                                                   */}
+      {/* ========================================================================= */}
+      {activeTab === 'calls' && (
+        <div className="space-y-6">
+          {/* KPI Strip */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <Card className="p-3 border-border">
+              <span className="text-[10px] uppercase font-bold text-text-muted block">Total Calls</span>
+              <span className="text-xl font-bold text-text tabular-nums block mt-1">{callStats.totalCalls}</span>
+              <span className="text-[10px] text-text-muted">{callStats.uniqueContactsCalled} unique contacts</span>
+            </Card>
+
+            <Card className="p-3 border-border bg-emerald-50/20">
+              <span className="text-[10px] uppercase font-bold text-emerald-800 block">Connection Rate</span>
+              <span className="text-xl font-bold text-emerald-700 tabular-nums block mt-1">
+                {callStats.connectionRate}%
+              </span>
+              <span className="text-[10px] text-emerald-700">{callStats.connected} answered</span>
+            </Card>
+
+            <Card className="p-3 border-border bg-blue-50/20">
+              <span className="text-[10px] uppercase font-bold text-blue-800 block">Meetings Fixed</span>
+              <span className="text-xl font-bold text-blue-700 tabular-nums block mt-1">
+                {callStats.meetingsFixed}
+              </span>
+              <span className="text-[10px] text-blue-700">Scheduled calendar meets</span>
+            </Card>
+
+            <Card className="p-3 border-border bg-purple-50/20">
+              <span className="text-[10px] uppercase font-bold text-purple-800 block">Lead Conversion</span>
+              <span className="text-xl font-bold text-purple-700 tabular-nums block mt-1">
+                {callStats.conversionRate}%
+              </span>
+              <span className="text-[10px] text-purple-700">{callStats.converted} signed clients</span>
+            </Card>
+
+            <Card className="p-3 border-border bg-amber-50/20">
+              <span className="text-[10px] uppercase font-bold text-amber-800 block">Follow-ups Pending</span>
+              <span className="text-xl font-bold text-amber-700 tabular-nums block mt-1">
+                {callStats.followUpsPending}
+              </span>
+              <span className="text-[10px] text-amber-700">{callStats.followUpsDueToday} due today</span>
+            </Card>
+
+            <Card className="p-3 border-border bg-rose-50/20">
+              <span className="text-[10px] uppercase font-bold text-rose-800 block">Unanswered Calls</span>
+              <span className="text-xl font-bold text-rose-700 tabular-nums block mt-1">
+                {callStats.notAnswered}
+              </span>
+              <span className="text-[10px] text-rose-700">Busy / No answer</span>
+            </Card>
+          </div>
+
+          {/* Per-Caller Performance and Lead Stages */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Per-Caller Stats */}
+            <Card className="border-border overflow-hidden">
+              <CardHeader className="p-4 border-b border-border flex items-center justify-between">
+                <CardTitle className="text-sm font-bold">Caller Team Performance</CardTitle>
+                <Badge variant="primary">{callStats.perCallerStats.length} Callers</Badge>
+              </CardHeader>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-surface-subtle text-text-muted uppercase text-[10px] font-bold border-b border-border">
+                    <tr>
+                      <th className="py-2.5 px-3">Team Member</th>
+                      <th className="py-2.5 px-3 text-center">Calls Made</th>
+                      <th className="py-2.5 px-3 text-center">Connected</th>
+                      <th className="py-2.5 px-3 text-center">Meetings</th>
+                      <th className="py-2.5 px-3 text-center">Follow-ups</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {callStats.perCallerStats.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-6 text-center text-text-muted italic">
+                          No calls recorded in this period.
+                        </td>
+                      </tr>
+                    ) : (
+                      callStats.perCallerStats.map((c) => (
+                        <tr key={c.caller} className="hover:bg-surface-subtle/50">
+                          <td className="py-2.5 px-3 font-bold text-text">{c.caller}</td>
+                          <td className="py-2.5 px-3 text-center font-bold tabular-nums">{c.totalCalls}</td>
+                          <td className="py-2.5 px-3 text-center font-bold tabular-nums text-emerald-700">{c.connected}</td>
+                          <td className="py-2.5 px-3 text-center font-bold tabular-nums text-blue-700">{c.meetingsFixed}</td>
+                          <td className="py-2.5 px-3 text-center font-bold tabular-nums text-amber-700">{c.followUps}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Stage Pipeline Distribution */}
+            <Card className="border-border p-4">
+              <CardHeader className="p-0 pb-3 border-b border-border mb-3 flex items-center justify-between">
+                <CardTitle className="text-sm font-bold">Leads Pipeline Distribution</CardTitle>
+                <Badge variant="slate">{leads.length} Total Leads</Badge>
+              </CardHeader>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {[
+                  { label: 'New / Raw', count: leads.filter((l) => l.stage === 'New').length, color: 'text-text' },
+                  { label: 'Contacted', count: leads.filter((l) => l.stage === 'Contacted').length, color: 'text-blue-600' },
+                  { label: 'Follow-up', count: leads.filter((l) => l.stage === 'Follow-up').length, color: 'text-amber-600' },
+                  { label: 'Meeting Fixed', count: leads.filter((l) => l.stage === 'Meeting Fixed').length, color: 'text-purple-600' },
+                  { label: 'Converted Client', count: leads.filter((l) => l.stage === 'Converted').length, color: 'text-emerald-600' },
+                  { label: 'Not Interested', count: leads.filter((l) => l.stage === 'Not Interested').length, color: 'text-rose-600' },
+                ].map((s) => (
+                  <div key={s.label} className="p-3 rounded-card bg-surface-subtle border border-border">
+                    <span className="text-[10px] uppercase font-bold text-text-muted block">{s.label}</span>
+                    <span className={`text-xl font-bold tabular-nums block mt-1 ${s.color}`}>{s.count}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
         </div>
       )}
     </div>

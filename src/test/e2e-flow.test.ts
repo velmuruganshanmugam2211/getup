@@ -108,6 +108,7 @@ describe('Getup Agency End-to-End Selector & Financial Verification Flow', () =>
       id: 'exp-1',
       clientId: client.id,
       type: 'client',
+      expenseNature: 'variable',
       category: 'travel',
       amount: 200,
       date: '2026-10-12',
@@ -121,6 +122,7 @@ describe('Getup Agency End-to-End Selector & Financial Verification Flow', () =>
       id: 'exp-2',
       clientId: client.id,
       type: 'client',
+      expenseNature: 'variable',
       category: 'equipment',
       amount: 5000,
       date: '2026-10-12',
@@ -147,6 +149,7 @@ describe('Getup Agency End-to-End Selector & Financial Verification Flow', () =>
     const expAgency: Expense = {
       id: 'exp-agency-1',
       type: 'agency',
+      expenseNature: 'fixed',
       category: 'rent',
       amount: 10000,
       date: '2026-10-15',

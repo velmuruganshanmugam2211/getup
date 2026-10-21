@@ -29,6 +29,9 @@ const TeamPage = lazy(() => import('@/features/team').then((m) => ({ default: m.
 const ReportsPage = lazy(() =>
   import('@/features/reports').then((m) => ({ default: m.ReportsPage }))
 );
+const CallsPage = lazy(() =>
+  import('@/features/calls').then((m) => ({ default: m.CallsPage }))
+);
 const SettingsPage = lazy(() =>
   import('@/features/settings').then((m) => ({ default: m.SettingsPage }))
 );
@@ -162,6 +165,16 @@ export const router = createBrowserRouter([
           <RoleRoute permission="team.read">
             <SuspenseLoader>
               <TeamPage />
+            </SuspenseLoader>
+          </RoleRoute>
+        ),
+      },
+      {
+        path: 'calls',
+        element: (
+          <RoleRoute permission="calls.read">
+            <SuspenseLoader>
+              <CallsPage />
             </SuspenseLoader>
           </RoleRoute>
         ),

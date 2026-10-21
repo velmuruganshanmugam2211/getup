@@ -14,6 +14,11 @@ import {
   BillingCycle,
   BillingCyclePackage,
   Money,
+  RecurringFixedExpense,
+  Lead,
+  CallLog,
+  LeadStage,
+  CallOutcome,
 } from '@/types';
 
 export interface RenewCycleOptions {
@@ -72,13 +77,32 @@ export interface IFinanceService {
   createPayment(data: Omit<Payment, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>): Promise<Payment>;
   updatePayment(id: string, data: Partial<Payment>): Promise<Payment>;
   deletePayment(id: string): Promise<void>;
-  getExpenses(filters?: { month?: string; category?: string; clientId?: string; type?: string }): Promise<Expense[]>;
+  getExpenses(filters?: { month?: string; category?: string; clientId?: string; type?: string; expenseNature?: 'fixed' | 'variable' }): Promise<Expense[]>;
   createExpense(data: Omit<Expense, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>): Promise<Expense>;
   createExpensesBatch(items: Array<Omit<Expense, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>>): Promise<Expense[]>;
   updateExpense(id: string, data: Partial<Expense>): Promise<Expense>;
   deleteExpense(id: string): Promise<void>;
   getSalaries(month?: string): Promise<Salary[]>;
   getMonthlySummary(month: string): Promise<MonthlyFinancialSummary>;
+  getRecurringFixedExpenses(): Promise<RecurringFixedExpense[]>;
+  createRecurringFixedExpense(data: Omit<RecurringFixedExpense, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>): Promise<RecurringFixedExpense>;
+  updateRecurringFixedExpense(id: string, data: Partial<RecurringFixedExpense>): Promise<RecurringFixedExpense>;
+  deleteRecurringFixedExpense(id: string): Promise<void>;
+  markRecurringExpensePaid(recurringId: string, month: string): Promise<Expense>;
+  processAutoAddFixedExpenses(month: string): Promise<Expense[]>;
+}
+
+export interface ICallService {
+  getLeads(filters?: { search?: string; stage?: LeadStage }): Promise<Lead[]>;
+  getLeadById(id: string): Promise<Lead | null>;
+  createLead(data: Omit<Lead, 'id' | 'createdAt' | 'updatedAt' | 'createdBy' | 'stage'> & { stage?: LeadStage }): Promise<Lead>;
+  updateLead(id: string, data: Partial<Lead>): Promise<Lead>;
+  deleteLead(id: string): Promise<void>;
+  getCallLogs(filters?: { leadId?: string; date?: string; calledBy?: string; outcome?: CallOutcome }): Promise<CallLog[]>;
+  createCallLog(data: Omit<CallLog, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>): Promise<CallLog>;
+  updateCallLog(id: string, data: Partial<CallLog>): Promise<CallLog>;
+  deleteCallLog(id: string): Promise<void>;
+  markFollowUpDone(id: string): Promise<CallLog>;
 }
 
 export interface ITaskService {

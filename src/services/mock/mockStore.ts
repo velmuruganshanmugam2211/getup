@@ -12,6 +12,9 @@ import {
   AgencySettings,
   BillingCycle,
   BillingCyclePackage,
+  RecurringFixedExpense,
+  Lead,
+  CallLog,
 } from '@/types';
 import {
   SEED_USERS,
@@ -66,6 +69,7 @@ export const DEFAULT_AGENCY_SETTINGS: AgencySettings = {
   overdueAlertsEnabled: true,
   sidebarCollapsedDefault: false,
   dateFormat: 'DD MMM YYYY',
+  initialOpeningBalance: 0,
 };
 
 class MockStore {
@@ -90,6 +94,9 @@ class MockStore {
   calendarItems: CalendarItem[] = getOrInit('calendarItems', SEED_CALENDAR_ITEMS);
   notifications: Notification[] = getOrInit('notifications', SEED_NOTIFICATIONS);
   activityLogs: ActivityLog[] = getOrInit('activityLogs', SEED_ACTIVITY_LOGS);
+  leads: Lead[] = getOrInit('leads', [] as Lead[]);
+  callLogs: CallLog[] = getOrInit('callLogs', [] as CallLog[]);
+  recurringFixedExpenses: RecurringFixedExpense[] = getOrInit('recurringFixedExpenses', [] as RecurringFixedExpense[]);
   settings: AgencySettings = getOrInit('settings', DEFAULT_AGENCY_SETTINGS);
   currentUser: User = (() => {
     const raw = getOrInit('currentUser', SEED_USERS[0]);
@@ -290,6 +297,36 @@ class MockStore {
       }
     }
 
+    // 2. Migrate existing expenses to populate expenseNature
+    let expenseMigrationCount = 0;
+    for (const e of this.expenses) {
+      if (!e.expenseNature) {
+        if (e.type === 'client' || !!e.clientId) {
+          e.expenseNature = 'variable';
+        } else if (['salary', 'rent', 'software'].includes(e.category)) {
+          e.expenseNature = 'fixed';
+        } else {
+          e.expenseNature = 'variable';
+        }
+        expenseMigrationCount++;
+        migratedSomething = true;
+      }
+    }
+
+    if (expenseMigrationCount > 0) {
+      try {
+        localStorage.setItem(
+          'getup_expenses_migrated_summary',
+          JSON.stringify({
+            count: expenseMigrationCount,
+            migratedAt: new Date().toISOString(),
+          })
+        );
+      } catch {
+        // ignore
+      }
+    }
+
     if (migratedSomething) {
       this.saveAll();
     }
@@ -307,6 +344,9 @@ class MockStore {
     save('calendarItems', this.calendarItems);
     save('notifications', this.notifications);
     save('activityLogs', this.activityLogs);
+    save('leads', this.leads);
+    save('callLogs', this.callLogs);
+    save('recurringFixedExpenses', this.recurringFixedExpenses);
     save('settings', this.settings);
     save('currentUser', this.currentUser);
   }
@@ -322,6 +362,9 @@ class MockStore {
     this.calendarItems = [];
     this.notifications = [];
     this.activityLogs = [];
+    this.leads = [];
+    this.callLogs = [];
+    this.recurringFixedExpenses = [];
     this.saveAll();
   }
 
@@ -337,6 +380,9 @@ class MockStore {
     this.calendarItems = [...SEED_CALENDAR_ITEMS];
     this.notifications = [...SEED_NOTIFICATIONS];
     this.activityLogs = [...SEED_ACTIVITY_LOGS];
+    this.leads = [];
+    this.callLogs = [];
+    this.recurringFixedExpenses = [];
     this.settings = { ...DEFAULT_AGENCY_SETTINGS };
     this.currentUser = { ...SEED_USERS[0] };
     this.saveAll();

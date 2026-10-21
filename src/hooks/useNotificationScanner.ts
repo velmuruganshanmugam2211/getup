@@ -9,6 +9,7 @@ import {
   billingCycleService,
   clientService,
   settingsService,
+  callService,
 } from '@/services';
 import { CalendarItem, MeetingReminder, Task, Client, BillingCycle } from '@/types';
 import { deriveCycleStatus, getCycleDaysRemaining } from '@/lib/cycleUtils';
@@ -122,12 +123,9 @@ export function useNotificationScanner() {
           now.getHours() > targetHour ||
           (now.getHours() === targetHour && now.getMinutes() >= (targetMinute || 0));
 
-        // 1. Task Notifications (Workers get only their own; Super Admin gets all)
+        // 1. Task Due Date Notifications: GO ONLY TO ASSIGNEE
         const allTasks = await taskService.getTasks();
-        const relevantTasks =
-          user.role === 'worker'
-            ? allTasks.filter((t: Task) => t.assigneeId === user.id)
-            : allTasks;
+        const relevantTasks = allTasks.filter((t: Task) => t.assigneeId === user.id);
 
         for (const t of relevantTasks) {
           if (t.status === 'done') continue;
@@ -274,11 +272,59 @@ export function useNotificationScanner() {
           }
         }
 
-        // 4. Meeting Reminders (Super Admin only or attendees)
+        // 4. Prospect Follow-ups (Super Admin only)
+        const followUpTimeStr = settings.followUpNotificationTime || '09:00';
+        const [fuHour, fuMinute] = followUpTimeStr.split(':').map(Number);
+        const isPastFollowUpCheck =
+          now.getHours() > fuHour ||
+          (now.getHours() === fuHour && now.getMinutes() >= (fuMinute || 0));
+
+        const [allLeads, allCalls] = await Promise.all([
+          callService.getLeads(),
+          callService.getCallLogs(),
+        ]);
+        const leadMap = new Map(allLeads.map((l) => [l.id, l]));
+
+        for (const call of allCalls) {
+          if (!call.followUpDate || call.followUpDone) continue;
+          const lead = leadMap.get(call.leadId);
+          const leadName = lead?.businessName || 'Prospect';
+
+          // Overdue follow-up
+          if (call.followUpDate < todayStr) {
+            const key = `fu-overdue-${call.id}-${todayStr}`;
+            await sendAlert(
+              key,
+              'follow_up_overdue',
+              'Follow-up Overdue',
+              `Follow-up callback with "${leadName}" was due on ${formatDate(call.followUpDate)}.`,
+              '/calls',
+              call.id,
+              'warning'
+            );
+          }
+
+          // Follow-up due today
+          if (call.followUpDate === todayStr && isPastFollowUpCheck) {
+            const key = `fu-duetoday-${call.id}-${todayStr}`;
+            await sendAlert(
+              key,
+              'follow_up_due',
+              'Follow-up Due Today',
+              `Follow-up callback with "${leadName}" is due today${call.followUpTime ? ` at ${call.followUpTime}` : ''}.`,
+              '/calls',
+              call.id,
+              'info'
+            );
+          }
+        }
+
+        // 5. Meeting Reminders (2 days before, 1 day before, and at user's chosen offsets, plus on the day)
         const calendarItems = await calendarService.getItems();
         const meetings = calendarItems.filter(
           (i: CalendarItem) => i.type === 'meeting' && i.date && i.startTime
         );
+        const in2DaysStr = format(addDays(now, 2), 'yyyy-MM-dd');
 
         for (const m of meetings) {
           try {
@@ -286,41 +332,78 @@ export function useNotificationScanner() {
             const diffMs = meetingStart - nowTime;
             const diffMins = Math.round(diffMs / (60 * 1000));
 
-            // Meeting starting in 10 minutes
-            if (diffMins >= 0 && diffMins <= 10) {
-              const key = `mtg-10min-${m.id}`;
+            const activeReminders = new Set<MeetingReminder>(m.reminders || []);
+            if (m.reminder) activeReminders.add(m.reminder);
+
+            // A. 2 Days Before: if meeting is in 2 days (e.g. today is 21 Oct, meeting is 23 Oct)
+            if (m.date === in2DaysStr && activeReminders.has('2_days')) {
+              const key = `mtg-remind-2days-${m.id}-${todayStr}`;
               await sendAlert(
                 key,
                 'meeting_reminder',
-                `Meeting in ${diffMins === 0 ? 'less than a minute' : `${diffMins} min`}`,
-                `"${m.title}" is starting soon.`,
+                'Meeting in 2 Days',
+                `Upcoming meeting "${m.title}" is scheduled in 2 days on ${formatDate(m.date)} at ${m.startTime}.`,
                 '/calendar',
                 m.id,
-                'warning'
+                'info'
               );
             }
 
-            // Configured reminder offset
-            if (m.reminder) {
-              const reminderOffsets: Record<MeetingReminder, number> = {
-                at_time: 0,
-                '10_min': 10,
-                '30_min': 30,
-                '1_hour': 60,
-                '1_day': 1440,
-              };
-              const offsetMins = reminderOffsets[m.reminder] ?? 0;
-              const reminderTargetTime = meetingStart - offsetMins * 60 * 1000;
-              if (Math.abs(nowTime - reminderTargetTime) <= 90 * 1000) {
-                const key = `mtg-remind-${m.reminder}-${m.id}`;
+            // B. 1 Day Before: if meeting is tomorrow (e.g. today is 22 Oct, meeting is 23 Oct)
+            if (m.date === tomorrowStr && activeReminders.has('1_day')) {
+              const key = `mtg-remind-1day-${m.id}-${todayStr}`;
+              await sendAlert(
+                key,
+                'meeting_reminder',
+                'Meeting Tomorrow',
+                `Upcoming meeting "${m.title}" is tomorrow at ${m.startTime}.`,
+                '/calendar',
+                m.id,
+                'info'
+              );
+            }
+
+            // C. On the day of meeting
+            if (m.date === todayStr) {
+              // 1 hour before
+              if (activeReminders.has('1_hour') && diffMins > 10 && diffMins <= 60) {
+                const key = `mtg-remind-1hour-${m.id}-${todayStr}`;
                 await sendAlert(
                   key,
                   'meeting_reminder',
-                  'Meeting Reminder',
-                  `Upcoming meeting "${m.title}" at ${m.startTime}.`,
+                  'Meeting in 1 Hour',
+                  `"${m.title}" starts in 1 hour at ${m.startTime}.`,
                   '/calendar',
                   m.id,
                   'info'
+                );
+              }
+
+              // 30 min before
+              if (activeReminders.has('30_min') && diffMins > 10 && diffMins <= 30) {
+                const key = `mtg-remind-30min-${m.id}-${todayStr}`;
+                await sendAlert(
+                  key,
+                  'meeting_reminder',
+                  'Meeting in 30 Minutes',
+                  `"${m.title}" starts in 30 minutes at ${m.startTime}.`,
+                  '/calendar',
+                  m.id,
+                  'info'
+                );
+              }
+
+              // Starting soon (within 10 minutes)
+              if (diffMins >= 0 && diffMins <= 10) {
+                const key = `mtg-10min-${m.id}-${todayStr}`;
+                await sendAlert(
+                  key,
+                  'meeting_reminder',
+                  `Meeting in ${diffMins === 0 ? 'less than a minute' : `${diffMins} min`}`,
+                  `"${m.title}" is starting soon at ${m.startTime}.`,
+                  '/calendar',
+                  m.id,
+                  'warning'
                 );
               }
             }

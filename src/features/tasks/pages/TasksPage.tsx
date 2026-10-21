@@ -272,6 +272,11 @@ export const TasksPage: React.FC = () => {
   // Filtered tasks
   const filteredTasks = useMemo(() => {
     return tasks.filter((t) => {
+      // Worker logs in and sees ONLY tasks assigned to them
+      if (!isSuperAdmin && user?.id && t.assigneeId !== user.id) {
+        return false;
+      }
+
       const matchSearch =
         !search ||
         t.title.toLowerCase().includes(search.toLowerCase()) ||
@@ -285,7 +290,22 @@ export const TasksPage: React.FC = () => {
 
       return matchSearch && matchClient && matchAssignee && matchPriority;
     });
-  }, [tasks, search, selectedClientId, selectedAssigneeId, selectedPriority]);
+  }, [tasks, search, selectedClientId, selectedAssigneeId, selectedPriority, isSuperAdmin, user]);
+
+  // Per-person summary statistics
+  const assigneeStats = useMemo(() => {
+    const baseTasks = isSuperAdmin
+      ? (selectedAssigneeId === 'all' ? tasks : tasks.filter((t) => t.assigneeId === selectedAssigneeId))
+      : tasks.filter((t) => t.assigneeId === user?.id);
+
+    const todayStr = '2026-10-21';
+    const todo = baseTasks.filter((t) => t.status === 'todo').length;
+    const inProgress = baseTasks.filter((t) => t.status === 'in_progress' || t.status === 'doing').length;
+    const done = baseTasks.filter((t) => t.status === 'done').length;
+    const overdue = baseTasks.filter((t) => t.status !== 'done' && t.dueDate && t.dueDate < todayStr).length;
+
+    return { todo, inProgress, done, overdue, total: baseTasks.length };
+  }, [tasks, selectedAssigneeId, isSuperAdmin, user]);
 
   // Clients to show
   const activeClients = useMemo(() => {
@@ -583,6 +603,55 @@ export const TasksPage: React.FC = () => {
           </div>
         )}
 
+        {/* Person / Assignee Filter Chips Row (Super Admin Personal Tracking & Per-Member Filter) */}
+        {isSuperAdmin && (
+          <div className="flex items-center gap-1.5 overflow-x-auto py-1 scrollbar-none border-t border-border pt-1.5">
+            <span className="text-[10px] uppercase font-bold text-text-muted tracking-wider shrink-0 mr-1">
+              Person:
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedAssigneeId('all')}
+              className={`px-2.5 py-1 text-xs font-semibold rounded-pill border transition-colors shrink-0 ${
+                selectedAssigneeId === 'all'
+                  ? 'bg-primary-600 text-white border-primary-600 shadow-sm'
+                  : 'bg-surface text-text-muted border-border hover:text-text'
+              }`}
+            >
+              All Team ({users.length})
+            </button>
+            {user?.id && (
+              <button
+                type="button"
+                onClick={() => setSelectedAssigneeId(user.id)}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-pill border transition-colors shrink-0 ${
+                  selectedAssigneeId === user.id
+                    ? 'bg-primary-600 text-white border-primary-600 shadow-sm'
+                    : 'bg-surface text-text-muted border-border hover:text-text'
+                }`}
+              >
+                Me ({user.name})
+              </button>
+            )}
+            {users
+              .filter((u) => u.id !== user?.id)
+              .map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => setSelectedAssigneeId(selectedAssigneeId === u.id ? 'all' : u.id)}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-pill border transition-colors shrink-0 ${
+                    selectedAssigneeId === u.id
+                      ? 'bg-primary-600 text-white border-primary-600 shadow-sm'
+                      : 'bg-surface text-text-muted border-border hover:text-text'
+                  }`}
+                >
+                  {u.name}
+                </button>
+              ))}
+          </div>
+        )}
+
         {/* Active Removable Filter Chips */}
         {activeChips.length > 0 && (
           <ActiveFilterChipsRow
@@ -593,6 +662,30 @@ export const TasksPage: React.FC = () => {
             }}
           />
         )}
+      </div>
+
+      {/* Per-Person Work Tracking Summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-surface p-3 rounded-card border border-border shadow-xs">
+          <span className="text-[10px] uppercase font-bold text-text-muted block">To Do</span>
+          <span className="text-xl font-bold text-text tabular-nums block mt-0.5">{assigneeStats.todo}</span>
+          <span className="text-[10px] text-text-muted">Pending action</span>
+        </div>
+        <div className="bg-surface p-3 rounded-card border border-border shadow-xs bg-blue-50/20">
+          <span className="text-[10px] uppercase font-bold text-blue-700 block">In Progress</span>
+          <span className="text-xl font-bold text-blue-700 tabular-nums block mt-0.5">{assigneeStats.inProgress}</span>
+          <span className="text-[10px] text-blue-600">Underway</span>
+        </div>
+        <div className="bg-surface p-3 rounded-card border border-border shadow-xs bg-emerald-50/20">
+          <span className="text-[10px] uppercase font-bold text-emerald-700 block">Completed</span>
+          <span className="text-xl font-bold text-emerald-700 tabular-nums block mt-0.5">{assigneeStats.done}</span>
+          <span className="text-[10px] text-emerald-600">Finished tasks</span>
+        </div>
+        <div className="bg-surface p-3 rounded-card border border-border shadow-xs bg-rose-50/20">
+          <span className="text-[10px] uppercase font-bold text-rose-700 block">Overdue</span>
+          <span className="text-xl font-bold text-rose-700 tabular-nums block mt-0.5">{assigneeStats.overdue}</span>
+          <span className="text-[10px] text-rose-600">Past target date</span>
+        </div>
       </div>
 
       {/* Main Content Area */}
@@ -699,11 +792,7 @@ export const TasksPage: React.FC = () => {
                         <div className="flex items-center gap-3 text-xs flex-wrap">
                           <span className="font-semibold text-text">
                             {dlv.activeTypes
-                              .map((t) =>
-                                t.extra > 0
-                                  ? `${t.label} ${t.done} / ${t.promised} (+${t.extra} extra)`
-                                  : `${t.label} ${t.done} / ${t.promised}`
-                              )
+                              .map((t) => t.displayBadgeWithRemaining || `${t.label} ${t.done} / ${t.promised}`)
                               .join(' · ')}
                           </span>
                           <div className="w-24 h-2 bg-slate-200 rounded-full overflow-hidden shrink-0">

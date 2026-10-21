@@ -691,9 +691,17 @@ export const ClientsPage: React.FC = () => {
                             <span className="tabular-nums">
                               {typeMetric.done} / {typeMetric.promised}
                             </span>
-                            {typeMetric.extra > 0 && (
-                              <span className="inline-block ml-1 px-1 py-0.2 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800">
-                                +{typeMetric.extra}
+                            {typeMetric.extra > 0 ? (
+                              <span className="block text-[9px] font-extrabold text-emerald-800">
+                                +{typeMetric.extra} extra
+                              </span>
+                            ) : typeMetric.remaining > 0 ? (
+                              <span className="block text-[9px] text-text-muted font-normal">
+                                ({typeMetric.remaining} remaining)
+                              </span>
+                            ) : (
+                              <span className="block text-[9px] text-emerald-700 font-semibold">
+                                Fulfilled
                               </span>
                             )}
                           </div>
